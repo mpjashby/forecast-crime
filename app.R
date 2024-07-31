@@ -112,7 +112,7 @@ ui <- page_fixed(
 					"Download forecasts",
 					htmlOutput("download_text"),
 					gt_output("forecast_table"),
-					downloadButton("downloadforecast", label = "Download forecasts"),
+					downloadButton("download_forecast", label = "Download forecasts"),
 					icon = icon("download")
 				),
 				multiple = FALSE
@@ -492,6 +492,16 @@ server <- function(input, output) {
 		
 	}) |> 
 		bindEvent(input$submit)
+	
+	
+	
+	## Download button ----
+	output$download_forecast <- downloadHandler(
+		filename = "forecasts.csv",
+		content = function(file) {
+			write_csv(forecasts(), file)
+		}
+	)
 	
 	
 	
