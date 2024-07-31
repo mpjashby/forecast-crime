@@ -45,6 +45,3 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 
-# Compiled web app (because it's too large for GitHub)
-_site/
-
