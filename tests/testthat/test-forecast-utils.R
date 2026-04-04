@@ -1,0 +1,418 @@
+source(testthat::test_path("../../R/forecast_utils.R"), local = TRUE)
+
+test_that("time and count columns are detected correctly", {
+  data <- tibble::tibble(
+    period = c("2024-01-01", "2024-01-02"),
+    crime_count = c(12, 15),
+    neighbourhood = c("A", "B")
+  )
+
+  expect_equal(detect_time_columns(data, "day"), "period")
+  expect_equal(detect_count_columns(data), "crime_count")
+})
+
+
+test_that("midnight-only datetime columns are treated as date columns", {
+  data <- tibble::tibble(
+    period = as.POSIXct(
+      c("2024-01-01 00:00:00", "2024-01-02 00:00:00"),
+      tz = "UTC"
+    ),
+    crime_count = c(12, 15)
+  )
+
+  expect_true(datetime_is_midnight_only(data$period))
+  expect_equal(detect_time_columns(data, "day"), "period")
+  expect_equal(detect_frequency_from_data(data), "day")
+})
+
+
+test_that("multiple date and datetime formats are parsed successfully", {
+  iso_dates <- parse_day_values(c("2026-01-01", "2026-01-02"))
+  long_dates <- parse_day_values(c("01 Jan 2026", "02 Jan 2026"))
+  slash_dmy <- parse_day_values(c("13/01/2026", "14/01/2026"))
+  slash_mdy <- parse_day_values(c("01/13/2026", "01/14/2026"))
+  iso_datetimes <- parse_day_values(c("2026-01-01 00:00:00", "2026-01-02 00:00:00"))
+  tz_datetimes <- parse_day_values(c(
+    "2026-01-01 00:00:00 UTC",
+    "2026-01-02 00:00:00 UTC"
+  ))
+  nonstandard_datetimes <- parse_day_values(c(
+    "01-Jan-2026 00:00:00",
+    "02-Jan-2026 00:00:00"
+  ))
+
+  expected <- as.Date(c("2026-01-01", "2026-01-02"))
+  expected_slash <- as.Date(c("2026-01-13", "2026-01-14"))
+
+  expect_equal(iso_dates, expected)
+  expect_equal(long_dates, expected)
+  expect_equal(slash_dmy, expected_slash)
+  expect_equal(slash_mdy, expected_slash)
+  expect_equal(iso_datetimes, expected)
+  expect_equal(tz_datetimes, expected)
+  expect_equal(nonstandard_datetimes, expected)
+})
+
+
+test_that("datetime columns with non-zero times are ignored when valid date columns exist", {
+  data <- tibble::tibble(
+    event_time = as.POSIXct(
+      c("2024-01-01 08:30:00", "2024-01-02 09:45:00"),
+      tz = "UTC"
+    ),
+    period = as.Date(c("2024-01-01", "2024-01-02")),
+    crime_count = c(12, 15)
+  )
+
+  expect_false(datetime_is_midnight_only(data$event_time))
+  expect_equal(detect_time_columns(data, "day"), "period")
+  expect_equal(detect_frequency_from_data(data), "day")
+})
+
+
+test_that("datetime columns with non-zero times produce a user-facing error when selected", {
+  data <- tibble::tibble(
+    event_time = as.POSIXct(
+      c("2024-01-01 08:30:00", "2024-01-02 09:45:00"),
+      tz = "UTC"
+    ),
+    crime_count = c(12, 15)
+  )
+
+  expect_error(
+    prepare_crime_input(
+      data = data,
+      time_col = "event_time",
+      count_col = "crime_count",
+      period_type = "day"
+    ),
+    "can only handle daily, weekly, monthly, or annual data"
+  )
+})
+
+
+test_that("time frequency can be detected from regular input data", {
+  daily_data <- tibble::tibble(
+    day_start = seq.Date(as.Date("2024-01-01"), by = "day", length.out = 10),
+    crimes = seq(10, 19)
+  )
+
+  weekly_data <- tibble::tibble(
+    week_start = seq.Date(as.Date("2024-01-01"), by = "week", length.out = 8),
+    crimes = seq(10, 17)
+  )
+
+  monthly_data <- tibble::tibble(
+    month_start = seq.Date(as.Date("2024-01-01"), by = "month", length.out = 8),
+    crimes = seq(10, 17)
+  )
+
+  annual_data <- tibble::tibble(
+    year_start = 2015:2024,
+    crimes = seq(10, 19)
+  )
+
+  irregular_data <- tibble::tibble(
+    when = as.Date(c("2024-01-01", "2024-01-05", "2024-01-12")),
+    crimes = c(4, 6, 8)
+  )
+
+  expect_equal(detect_frequency_from_data(daily_data), "day")
+  expect_equal(detect_frequency_from_data(weekly_data), "week")
+  expect_equal(detect_frequency_from_data(monthly_data), "month")
+  expect_equal(detect_frequency_from_data(annual_data), "year")
+  expect_null(detect_frequency_from_data(irregular_data))
+})
+
+
+test_that("individual regular date columns are not misclassified across frequencies", {
+  daily_values <- seq.Date(as.Date("2024-01-01"), by = "day", length.out = 10)
+  weekly_values <- seq.Date(as.Date("2024-01-01"), by = "week", length.out = 8)
+  monthly_values <- seq.Date(as.Date("2024-01-01"), by = "month", length.out = 8)
+  annual_values <- 2015:2024
+
+  expect_equal(detect_frequency_from_column(daily_values), "day")
+  expect_equal(detect_frequency_from_column(weekly_values), "week")
+  expect_equal(detect_frequency_from_column(monthly_values), "month")
+  expect_equal(detect_frequency_from_column(annual_values), "year")
+})
+
+
+test_that("missing weekly periods in the middle of the series produce an error", {
+  data <- tibble::tibble(
+    week = c("2024-W01", "2024-W03"),
+    crimes = c(20, 35)
+  )
+
+  expect_error(
+    prepare_crime_ts(data, "week", "crimes", "week"),
+    "missing weeks within the series"
+  )
+})
+
+
+test_that("finer data are aggregated and partial final aggregated periods are removed", {
+  data <- tibble::tibble(
+    day_start = seq.Date(as.Date("2024-01-01"), by = "day", length.out = 10),
+    crimes = c(5, 6, 7, 4, 5, 8, 9, 3, 2, 4)
+  )
+
+  prepared <- prepare_crime_input(
+    data = data,
+    time_col = "day_start",
+    count_col = "crimes",
+    period_type = "week",
+    source_period_type = "day"
+  )
+
+  expect_true(prepared$metadata$is_aggregated)
+  expect_true(prepared$metadata$partial_final_period_removed)
+  expect_equal(nrow(prepared$ts_data), 1)
+  expect_equal(prepared$ts_data$count, sum(data$crimes[1:7]))
+})
+
+
+test_that("only nested aggregations are allowed", {
+  weekly_data <- tibble::tibble(
+    week_start = seq.Date(as.Date("2024-01-01"), by = "week", length.out = 53),
+    crimes = seq(20, 72)
+  )
+
+  annual_prepared <- prepare_crime_input(
+    data = weekly_data,
+    time_col = "week_start",
+    count_col = "crimes",
+    period_type = "year",
+    source_period_type = "week"
+  )
+
+  expect_true(annual_prepared$metadata$is_aggregated)
+
+  expect_error(
+    prepare_crime_input(
+      data = weekly_data,
+      time_col = "week_start",
+      count_col = "crimes",
+      period_type = "month",
+      source_period_type = "week"
+    ),
+    "cannot be created safely"
+  )
+})
+
+
+test_that("irregular dates cannot be aggregated to a coarser frequency", {
+  irregular_data <- tibble::tibble(
+    day_start = as.Date(c(
+      "2024-01-01", "2024-01-03", "2024-01-04", "2024-01-10", "2024-01-15"
+    )),
+    crimes = c(10, 11, 12, 9, 8)
+  )
+
+  expect_error(
+    prepare_crime_input(
+      data = irregular_data,
+      time_col = "day_start",
+      count_col = "crimes",
+      period_type = "week"
+    ),
+    "does not imply a regular daily, weekly, monthly, or annual frequency"
+  )
+})
+
+
+test_that("irregular daily dates cannot be forecast as daily data", {
+  irregular_data <- tibble::tibble(
+    day_start = as.Date(c(
+      "2024-01-01", "2024-01-05", "2024-01-12", "2024-01-20"
+    )),
+    crimes = c(12, 14, 11, 10)
+  )
+
+  expect_error(
+    prepare_crime_input(
+      data = irregular_data,
+      time_col = "day_start",
+      count_col = "crimes",
+      period_type = "day"
+    ),
+    "does not imply a regular daily, weekly, monthly, or annual frequency"
+  )
+})
+
+
+test_that("daily data cannot be aggregated when a middle month is incomplete", {
+  full_january <- seq.Date(as.Date("2024-01-01"), as.Date("2024-01-31"), by = "day")
+  incomplete_february <- setdiff(
+    seq.Date(as.Date("2024-02-01"), as.Date("2024-02-29"), by = "day"),
+    as.Date("2024-02-14")
+  )
+  full_march <- seq.Date(as.Date("2024-03-01"), as.Date("2024-03-31"), by = "day")
+
+  data <- tibble::tibble(
+    day_start = c(full_january, incomplete_february, full_march),
+    crimes = rep(5, length(c(full_january, incomplete_february, full_march)))
+  )
+
+  expect_error(
+    prepare_crime_input(
+      data = data,
+      time_col = "day_start",
+      count_col = "crimes",
+      period_type = "month",
+      source_period_type = "day"
+    ),
+    "missing days within the series"
+  )
+})
+
+
+test_that("daily data can aggregate to month when only the final month is partial", {
+  january <- seq.Date(as.Date("2024-01-01"), as.Date("2024-01-31"), by = "day")
+  february <- seq.Date(as.Date("2024-02-01"), as.Date("2024-02-29"), by = "day")
+  partial_march <- seq.Date(as.Date("2024-03-01"), as.Date("2024-03-12"), by = "day")
+
+  data <- tibble::tibble(
+    day_start = c(january, february, partial_march),
+    crimes = rep(3, length(c(january, february, partial_march)))
+  )
+
+  prepared <- prepare_crime_input(
+    data = data,
+    time_col = "day_start",
+    count_col = "crimes",
+    period_type = "month",
+    source_period_type = "day"
+  )
+
+  expect_true(prepared$metadata$is_aggregated)
+  expect_true(prepared$metadata$partial_final_period_removed)
+  expect_equal(nrow(prepared$ts_data), 2)
+})
+
+
+test_that("monthly strings are parsed", {
+  parsed <- parse_period_column(c("2024-01", "2024-02"), "month")
+
+  expect_s3_class(parsed, "yearmonth")
+  expect_equal(as.character(parsed), c("2024 Jan", "2024 Feb"))
+})
+
+
+test_that("annual values are parsed and annual forecasts can be generated", {
+  parsed <- parse_period_column(c("2018", "2019", "2020"), "year")
+  expect_equal(parsed, as.Date(c("2018-01-01", "2019-01-01", "2020-01-01")))
+
+  data <- tibble::tibble(
+    year = 2012:2023,
+    crimes = c(150, 155, 162, 168, 171, 175, 179, 184, 188, 193, 197, 201)
+  )
+
+  ts_data <- prepare_crime_ts(data, "year", "crimes", "year")
+  result <- generate_forecast(ts_data, "year", horizon = 2)
+
+  expect_equal(nrow(result$forecast), 2)
+  expect_true(all(c("lower_50", "upper_50", "lower_80", "upper_80") %in% names(result$forecast)))
+})
+
+
+test_that("series assessment flags short and sparse data", {
+  ts_data <- tsibble::as_tsibble(
+    tibble::tibble(
+      index = seq.Date(as.Date("2024-01-01"), by = "day", length.out = 10),
+      count = c(rep(0, 8), 1, 2)
+    ),
+    index = index
+  )
+
+  assessment <- assess_series(ts_data, "day", horizon = 8)
+
+  expect_true(assessment$insufficient_history)
+  expect_true(assessment$sparse_counts)
+  expect_true(length(assessment$warnings) >= 2)
+})
+
+
+test_that("default horizon and suffix match the selected period type", {
+  expect_equal(default_horizon("day"), 28)
+  expect_equal(default_horizon("week"), 12)
+  expect_equal(default_horizon("month"), 12)
+  expect_equal(default_horizon("year"), 3)
+
+  expect_equal(format_period_suffix("week", 12), "weeks")
+  expect_equal(format_period_suffix("year", 1), "year")
+  expect_equal(format_period_suffix("", 5), "")
+})
+
+
+test_that("no aggregation metadata is added when source and target frequencies match", {
+  data <- tibble::tibble(
+    week_start = seq.Date(as.Date("2024-01-01"), by = "week", length.out = 8),
+    crimes = seq(20, 27)
+  )
+
+  prepared <- prepare_crime_input(
+    data = data,
+    time_col = "week_start",
+    count_col = "crimes",
+    period_type = "week",
+    source_period_type = "week"
+  )
+
+  expect_false(prepared$metadata$is_aggregated)
+  expect_false(prepared$metadata$partial_final_period_removed)
+})
+
+
+test_that("forecast generation returns forecast intervals", {
+  data <- tibble::tibble(
+    period = seq.Date(as.Date("2024-01-01"), by = "month", length.out = 30),
+    crimes = c(40, 42, 45, 50, 48, 51, 55, 57, 58, 60, 62, 64, 61, 63, 67,
+               69, 70, 72, 71, 74, 78, 80, 82, 79, 83, 86, 88, 90, 93, 95)
+  )
+
+  ts_data <- prepare_crime_ts(data, "period", "crimes", "month")
+  result <- generate_forecast(ts_data, "month", horizon = 3)
+
+  expect_equal(nrow(result$forecast), 3)
+  expect_true(all(c("forecast", "lower_95", "upper_95") %in% names(result$forecast)))
+  expect_true(all(result$forecast$upper_95 >= result$forecast$lower_95))
+})
+
+
+test_that("aggregated daily data can still produce weekly forecasts", {
+  data <- tibble::tibble(
+    period_start = seq.Date(as.Date("2024-01-01"), by = "day", length.out = 91),
+    burglary_count = c(
+      18, 20, 22, 21, 19, 17, 16,
+      19, 21, 23, 22, 20, 18, 17,
+      20, 22, 24, 23, 21, 19, 18,
+      21, 23, 25, 24, 22, 20, 19,
+      22, 24, 26, 25, 23, 21, 20,
+      23, 25, 27, 26, 24, 22, 21,
+      24, 26, 28, 27, 25, 23, 22,
+      25, 27, 29, 28, 26, 24, 23,
+      26, 28, 30, 29, 27, 25, 24,
+      27, 29, 31, 30, 28, 26, 25,
+      28, 30, 32, 31, 29, 27, 26,
+      29, 31, 33, 32, 30, 28, 27,
+      30, 32, 34, 33, 31, 29, 28
+    )
+  )
+
+  prepared <- prepare_crime_input(
+    data = data,
+    time_col = "period_start",
+    count_col = "burglary_count",
+    period_type = "week",
+    source_period_type = "day"
+  )
+
+  result <- generate_forecast(prepared$ts_data, "week", horizon = 6)
+
+  expect_equal(nrow(result$forecast), 6)
+  expect_false(any(is.na(result$forecast$forecast)))
+  expect_false(any(is.na(result$forecast$lower_95)))
+  expect_false(any(is.na(result$forecast$upper_95)))
+})

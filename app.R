@@ -1,511 +1,506 @@
 suppressPackageStartupMessages({
-	library(bslib)
-	library(dplyr)
-	library(fable)
-	library(feasts)
-	library(ggplot2)
-	library(gt)
-	library(htmltools)
-	library(lubridate)
-	library(purrr)
-	library(readr)
-	library(scales)
-	library(stringr)
-	library(tsibble)
-	library(shiny)
+  library(bslib)
+  library(dplyr)
+  library(fable)
+  library(fabletools)
+  library(feasts)
+  library(ggplot2)
+  library(htmltools)
+  library(lubridate)
+  library(purrr)
+  library(readr)
+  library(scales)
+  library(stringr)
+  library(tsibble)
+  library(shiny)
+  library(tibble)
 })
 
+# Load the forecasting helpers so the UI and server can share the same parsing,
+# validation, aggregation, and modelling logic.
+source("R/forecast_utils.R", local = TRUE)
 
-
-get_date_col <- function(data) {
-	
-	date_col_name_i <- data |> 
-		sapply(class) |> 
-		sapply(first) |> 
-		str_which("(Date|POSIXct)")
-	
-	data |> names() |> pluck(date_col_name_i, 1)
-	
+# Wrap outputs in a spinner only when shinycssloaders is installed.
+with_spinner <- function(x) {
+  if (requireNamespace("shinycssloaders", quietly = TRUE)) {
+    shinycssloaders::withSpinner(x)
+  } else {
+    x
+  }
 }
 
-
-
-# Define UI for application that draws a histogram -----------------------------
-ui <- page_fixed(
-	
-	## Application title ----
-	card(
-		h1("Forecast future crime frequency"),
-		markdown(
-			"This app forecasts how many crimes are likely to happen in an area in the 
-			near future, based on how many crimes occurred there in the recent past. 
-			The forecasts are created using an ensemble forecasting model that 
-			[Ashby (2023)](https://doi.org/10.21428/cb6ab371.8c79f146) found to be 
-			most accurate for forecasting crime.
-			
-			**Due to limitations in the underlying technology, this app currently 
-			works only in Google Chrome.**
-			
-			Upload your crime data to produce forecasts. Forecasts are produced 
-			directly in your web browser – no data is transferred or stored outside 
-			your own computer."
-		)
-	),
-	
-	## Input and output columns ----
-	layout_columns(
-		card(
-			p(strong("Step 1: upload crime data")),
-			markdown(
-				"Upload a single CSV file of data in which each row represents a single 
-				crime. The file should contain **one** column that shows the date on 
-				which each crime occurred."
-			),
-			fileInput(
-				inputId = "datafile",
-				label = NULL,
-				# label = "Upload a CSV file of crime data",
-				accept = ".csv"
-			),
-			p(strong("Step 2: choose type of forecasts")),
-			radioButtons(
-				inputId = "periodtype",
-				label = NULL,
-				choices = c(
-					"daily forecasts" = "day",
-					"weekly forecasts" = "week", 
-					"monthly forecasts" = "month"
-				)
-				# selected = character(0)
-			),
-			p(strong("Step 3: choose number of forecasts")),
-			p(
-				"Choose the number of days/weeks/months into the future to forecast. 
-				Forecasts will begin from the next period after the last period in the 
-				data you provide."
-			),
-			numericInput(
-				inputId = "periods",
-				label = NULL,
-				# label = "Number of periods into the future to forecast",
-				value = 7,
-				min = 0,
-				step = 1
-			),
-			p(strong("Step 4: generate forecasts")),
-			actionButton("submit", "Generate forecasts", icon = icon("chart-simple"))
-		),
-		card(
-			accordion(
-				accordion_panel(
-					"Check forecast accuracy",
-					shinycssloaders::withSpinner(htmlOutput("data_check_text")),
-					icon = icon("circle-question")
-				),
-				accordion_panel(
-					"View forecasts",
-					textOutput("forecast_period"),
-					shinycssloaders::withSpinner(plotOutput("plot")),
-					icon = icon("chart-simple")
-				),
-				accordion_panel(
-					"Download forecasts",
-					htmlOutput("download_text"),
-					gt_output("forecast_table"),
-					downloadButton("download_forecast", label = "Download forecasts"),
-					icon = icon("download")
-				),
-				multiple = FALSE
-			)
-		),
-		col_widths = c(5, 7),
-		fillable = TRUE
-	)
-	
+# Build the Shiny user interface. Step 1 collects inputs, while Steps 2 to 4
+# display model diagnostics, forecasts, and downloadable outputs.
+app_ui <- page_fixed(
+  title = "Crime count forecasting",
+  theme = bs_theme(version = 5, bootswatch = "flatly"),
+  tags$style(HTML("
+    .results-stale {
+      opacity: 0.45;
+      filter: grayscale(0.25);
+    }
+  ")),
+  card(
+    card_body(
+      h2("Forecast crime counts"),
+      p(
+        "This app forecasts future crime counts based on patterns in",
+        "historical crime data. The forecasts indicate how many crimes are",
+        "likely to happen in future if recent patterns in crime continue."
+      )
+    )
+  ),
+  layout_columns(
+    card(
+      card_header("Step 1. Upload and configure data"),
+      p(
+        "Upload a CSV file of existing crime counts. The file should have one",
+        "row for each time period. Each row should have two columns, one",
+        "containing the date of the start of each forecast period and one",
+        "column containing the number of crimes for that period."
+      ),
+      fileInput(
+        inputId = "datafile",
+        label = NULL,
+        accept = ".csv",
+        width = "100%"
+      ),
+      radioButtons(
+        inputId = "period_type",
+        label = "Time frequency",
+        choices = c(
+          "daily" = "day",
+          "weekly" = "week",
+          "monthly" = "month",
+          "annual" = "year"
+        ),
+        selected = character(0),
+        inline = TRUE
+      ),
+      layout_columns(
+        selectInput(
+          inputId = "time_col",
+          label = "Time-period column",
+          choices = NULL
+        ),
+        selectInput(
+          inputId = "count_col",
+          label = "Crime-count column",
+          choices = NULL
+        ),
+        col_widths = c(6, 6)
+      ),
+      helpText(
+        "If there is only one valid time column or one numeric count column, it will be selected automatically."
+      ),
+      div(
+        class = "d-flex align-items-end gap-2",
+        div(
+          style = "flex: 1;",
+          numericInput(
+            inputId = "horizon",
+            label = "How many periods into the future do you want to forecast?",
+            value = 12,
+            min = 1,
+            step = 1,
+            width = "100%"
+          )
+        ),
+        div(
+          class = "mb-3 fw-semibold text-muted",
+          uiOutput("horizon_suffix")
+        )
+      ),
+      actionButton("run_forecast", "Generate forecasts", class = "btn-primary")
+    ),
+    card(
+      card_header("Step 2. Check data suitability"),
+      uiOutput("step2_panel")
+    ),
+    col_widths = c(6, 6)
+  ),
+  layout_columns(
+    card(
+      card_header("Step 3. Check forecasts and uncertainty"),
+      uiOutput("step3_panel")
+    ),
+    card(
+      card_header("Step 4. Download forecasts"),
+      uiOutput("step4_panel")
+    ),
+    col_widths = c(8, 4)
+  )
 )
 
 
+server <- function(input, output, session) {
+  # Track the current inputs so the app can tell when displayed results no
+  # longer match the settings in Step 1.
+  current_settings <- reactive({
+    list(
+      data_path = input$datafile$datapath %||% NULL,
+      period_type = input$period_type %||% "",
+      time_col = input$time_col %||% "",
+      count_col = input$count_col %||% "",
+      horizon = input$horizon %||% NA_real_
+    )
+  })
 
+  applied_settings <- reactiveVal(NULL)
 
+  # Mark the result panels as stale whenever the user changes Step 1 after
+  # generating forecasts.
+  results_stale <- reactive({
+    !is.null(applied_settings()) && !identical(applied_settings(), current_settings())
+  })
 
-# Define server logic required to draw a histogram -----------------------------
-server <- function(input, output) {
-	
-	
-	
-	## Count events ----	
-	counts <- reactive({
-		
-		# Check file extension
-		if (tools::file_ext(input$datafile$name) == "csv") {
-			file_data <- read_csv(input$datafile$datapath, show_col_types = FALSE)
-		} else {
-			validate("Uploaded file is not a CSV file. Please upload a file with a `.csv` file extension")
-		}
+  uploaded_data <- reactive({
+    req(input$datafile)
+    validate(
+      need(
+        identical(tolower(tools::file_ext(input$datafile$name)), "csv"),
+        "Please upload a CSV file."
+      )
+    )
+    read_crime_data(input$datafile$datapath)
+  })
 
-		column_types <- sapply(sapply(file_data, class), first)
+  # After a file is uploaded, auto-populate the numeric count column and
+  # auto-select the time frequency if the data have a clearly detectable cadence.
+  observeEvent(
+    uploaded_data(),
+    {
+      data <- uploaded_data()
+      numeric_cols <- detect_count_columns(data)
+      detected_frequency <- detect_frequency_from_data(data)
 
-		if (sum(column_types %in% c("Date", "POSIXct")) > 1) {
-			validate("The data file contains more than one column of dates. Please upload a file containing one column of dates.")
-		} else if (sum(column_types %in% c("Date", "POSIXct")) == 0) {
-			validate("The data file does not contain a column of dates. Please upload a file containing one column of dates.")
-		}
+      updateSelectInput(
+        session,
+        "count_col",
+        choices = names(data),
+        selected = if (length(numeric_cols) == 1) numeric_cols else ""
+      )
 
-		date_col <- get_date_col(file_data)
-		file_data <- rename(file_data, date_use = {{date_col}})
+      updateRadioButtons(
+        session,
+        "period_type",
+        selected = detected_frequency %||% character(0)
+      )
+    },
+    ignoreNULL = FALSE
+  )
 
-		if (input$periodtype == "week") {
-			file_data <- mutate(file_data, date_use = yearweek(date_use))
-		} else if (input$periodtype == "month") {
-			file_data <- mutate(file_data, date_use = yearmonth(date_use))
-		} else {
-			file_data <- mutate(file_data, date_use = as_date(date_use))
-		}
-		
-		file_data |> 
-			count(date = date_use, name = "events") |> 
-			as_tsibble(index = date) |> 
-			fill_gaps(events = 0)
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Convert period name another format ----
-	period_name <- reactive(case_match(
-		input$periodtype, 
-		"day" ~ "daily", 
-		"week" ~ "weekly", 
-		"month" ~ "monthly"
-	)) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Model frequency ----
-	models <- reactive({
-		
-		model(
-			counts(),
-			forecast = combination_model(
-				ETS(events ~ trend() + season()),
-				TSLM(events ~ trend() + season()),
-				decomposition_model(STL(events ~ trend() + season()), ETS(season_adjust))
-			)
-			# forecast = combination_model(
-			# 	SNAIVE(events ~ lag()),
-			# ETS(events ~ trend() + season()),
-			# TSLM(events ~ trend() + season()),
-			# decomposition_model(STL(events ~ trend() + season()), ETS(season_adjust))
-			# )
-		)
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Forecast events ----
-	forecasts <- reactive({
-		
-		models() |>
-			forecast(h = input$periods) |>
-			as_tibble() |>
-			select(date, forecast = .mean)
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Format text to check forecast accuracy ----
-	output$data_check_text <- renderText({
-		
-		event_counts <- counts()
-		first_date <- first(event_counts$date)
-		last_date <- last(event_counts$date)
-		
-		
-		### Format text of start/finish dates string ----
-		
-		if (input$periodtype == "week") {
-			date_start <- format(first_date, "%Y, Week %U")
-			date_end <- format(last_date, "%Y, Week %U")
-		} else if (input$periodtype == "month") {
-			date_start <- format(first_date, "%B %Y")
-			date_end <- format(last_date, "%B %Y")
-		} else {
-			date_start <- format(first_date, "%e %B %Y")
-			date_end <- format(last_date, "%e %B %Y")
-		}
-		
-		mean_events <- event_counts |> 
-			summarise(mean_events = mean(events, na.rm = TRUE)) |> 
-			pluck("mean_events", 1) |> 
-			round()
-		
-		text1 <- str_glue(
-			"<p>Original data: {scales::comma(nrow(event_counts))} periods of ",
-			"{period_name()} data from {date_start} to {date_end} with an average ",
-			"of {mean_events} events per {input$periodtype}.</p>"
-		)
-		
-		
-		### Check input data ----
-		
-		data_rows <- nrow(event_counts)
-		
-		mean_events <- event_counts |> 
-			summarise(mean_events = mean(events, na.rm = TRUE)) |> 
-			pluck("mean_events", 1) |> 
-			round()
-		
-		if (input$periodtype == "day") {
-			next_period <- str_glue(
-				"The forecasts may be more accurate if you produced weekly forecasts ",
-				"instead."
-			)
-		} else if (input$periodtype == "week") {
-			next_period <- str_glue(
-				"The forecasts may be more accurate if you produced monthly forecasts ",
-				"instead."
-			)
-		} else {
-			next_period <- ""
-		}
-		
-		if (data_rows < 20) {
-			text2 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Only {input$periodtype}s of data have 
-				been provided</strong>. Forecasts are likely to be more accurate if 
-				historical data are available for 20 or more {input$periodtype}s.</p>'
-			)
-		} else if (mean_events < 5) {
-			text2 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Forecasts of rare events are likely to 
-				be unreliable</strong>. The data you have uploaded include an average of 
-				{mean_events} events per {input$periodtype}. All else being equal, 
-				forecasting becomes more difficult when there are very few events in 
-				each period. {next_period}</p>'
-			)
-		} else {
-			text2 <- str_glue(
-				'<p><i class="fa-solid fa-thumbs-up"></i> In general, the more data that 
-				is provided the more accurate the resulting forecasts will be, with at 
-				least 20 {input$periodtype}s of data required for reasonably accurate 
-				forecasting.</p>'
-			)
-		}
-		
-		
-		### Check forecasts ----
-		
-		forecast_rows <- nrow(forecasts())
-		mape <- models() |> accuracy() |> pluck("MAPE", 1)
-		
-		if (input$periodtype == "day" & forecast_rows > 365) {
-			text3 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Forecasting {comma(forecast_rows)} days 
-				into the future will be less accurate</strong>. The further into the 
-				future you attempt to forecast, the less accurate the forecasts will be 
-				because the processes underlying any patterns of crime may change in the 
-				meantime. Producing daily forecasts more than 365 days into the future 
-				is not advised.</p>'
-			)
-		} else if (input$periodtype == "week" & forecast_rows > 52) {
-			text3 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Forecasting {comma(forecast_rows)} weeks 
-				into the future will be less accurate</strong>. The further into the 
-				future you attempt to forecast, the less accurate the forecasts will be 
-				because the processes underlying any patterns of crime may change in the 
-				meantime. Producing weekly forecasts more than 52 weeks into the future 
-				is not advised.</p>'
-			)
-		} else if (input$periodtype == "month" & forecast_rows > 24) {
-			text3 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Forecasting {comma(forecast_rows)} 
-				months into the future will be less accurate</strong>. The further into 
-				the future you attempt to forecast, the less accurate the forecasts will 
-				be because the processes underlying any patterns of crime may change in 
-				the meantime. Producing monthly forecasts more than 24 months into the 
-				future is not advised.</p>'
-			)
-		} else if (data_rows < forecast_rows) {
-			text3 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Forecasting {comma(forecast_rows)} 
-				{input$periodtype}s into the future based on only {comma(data_rows)} 
-				{input$periodtype}s of data is likely to produce inaccurate 
-				forecasts</strong>. Provide data for a longer period or generate 
-				forecasts for a shorter period.</p>'
-			)
-		} else if (mape > 10) {
-			text3 <- str_glue(
-				'<p><i class="fa-solid fa-hand" style="color: #CC0000;"></i> 
-				<strong style="color: #CC0000;">Generated forecasts are likely to be
-				inaccurate</strong>. The app has identified patterns in the data 
-				provided, but those patterns are unlikely to be consistent enough for 
-				reliable forecasting, with differences between forecasts and actual 
-				crime counts of about {percent(mape, scale = 1)}. It may be possible to 
-				produce more-accurate forecasts manually.</p>'
-			)
-		} else {
-			text3 <- str_glue(
-				'<p><i class="fa-solid fa-thumbs-up"></i> Forecasts for 
-				{comma(forecast_rows)} {input$periodtype}s into the future are likely to 
-				be reasonably accurate based on the data provided.</p>'
-			)
-		}
-		
-    ### Combine text ----		
-		str_glue("{text1}{text2}{text3}")
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Format text of forecast-period string ----
-	output$forecast_period <- renderText({
-		
-		req(input$periodtype)
-		
-		if (input$periodtype == "week") {
-			date_start <- format(first(forecasts()$date), "%Y, Week %U")
-			date_end <- format(last(forecasts()$date), "%Y, Week %U")
-		} else if (input$periodtype == "month") {
-			date_start <- format(first(forecasts()$date), "%B %Y")
-			date_end <- format(last(forecasts()$date), "%B %Y")
-		} else {
-			date_start <- format(first(forecasts()$date), "%e %B %Y")
-			date_end <- format(last(forecasts()$date), "%e %B %Y")
-		}
-		
-		str_glue(
-			"Forecasts: {scales::comma(nrow(forecasts()))} {period_name()} ",
-			"forecasts from {date_start} to {date_end}."
-		)
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Produce output plot ----
-	output$plot <- renderPlot({
-		
-		event_counts <- counts() |> 
-			mutate(date = as_date(date))
-		
-		event_forecasts <- forecasts() |> 
-			mutate(date = as_date(date))
-		
-		forecast_plus <- counts() |>
-			tail(1) |>
-			select(date, forecast = events) |> 
-			mutate(date = as_date(date)) |>
-			bind_rows(event_forecasts)
-		
-		prev_events_to_show <- min(7, nrow(forecast_plus) - 1, nrow(event_counts))
-		
-		ggplot() +
-			geom_line(
-				aes(x = date, y = events, linetype = "A"), 
-				data = tail(event_counts, n = prev_events_to_show)
-			) +
-			geom_line(
-				aes(x = date, y = forecast, linetype = "B"), 
-				data = forecast_plus
-			) +
-			geom_point(
-				aes(x = date, y = events), 
-				tail(event_counts, prev_events_to_show)
-			) +
-			geom_point(aes(x = date, y = forecast), data = event_forecasts) +
-			scale_x_date(expand = expansion(mult = 0.02)) +
-			scale_y_continuous(expand = expansion(mult = 0.25)) +
-			scale_linetype_manual(
-				values = c("A" = "solid", "B" = "12"),
-				labels = c("A" = "past events", "B" = "forecasts")
-			) +
-			labs(
-				caption = str_glue(
-					"Note: {prev_events_to_show} most recent past event counts are ",
-					"shown for comparison with forecasts"
-				),
-				x = NULL, 
-				y = "number of crimes",
-				linetype = NULL
-			) +
-			theme_minimal() +
-			theme(
-				legend.position = "bottom",
-				plot.caption = element_text(hjust = 0),
-				plot.caption.position = "plot"
-			)
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Produce text for download box ----
-	output$download_text <- renderText({
-		
-		download_text <- str_glue(
-			"<p>The first 10 forecasts are shown below. To download all forecasts ",
-			"as a CSV file, click 'Download forecasts' below.</p>"
-		)
-		
-		if (input$periodtype %in% c("week", "month")) {
-			str_glue(
-				"{download_text}<p>Note: for {period_name()} forecasts, the dates ",
-				"shown in the table and downloaded CSV file are the first day of the ",
-				"{input$periodtype}</p>"
-			)
-		} else {
-			download_text
-		}
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Produce table for download box ----
-	output$forecast_table <- render_gt({
-		
-		forecast_table <- forecasts() |> 
-			slice(1:10) |> 
-			mutate(
-				date = format(date, "%Y-%m-%d"),
-				forecast = as.integer(round(forecast))
-			) |> 
-			gt() |> 
-			cols_align("left", columns = date)
-		
-	}) |> 
-		bindEvent(input$submit)
-	
-	
-	
-	## Download button ----
-	output$download_forecast <- downloadHandler(
-		filename = "forecasts.csv",
-		content = function(file) {
-			write_csv(forecasts(), file)
-		}
-	)
-	
-	
-	
+  # When the selected frequency changes, refresh the candidate time column list
+  # because the same column may parse differently for days, weeks, months, or years.
+  observeEvent(
+    list(uploaded_data(), input$period_type),
+    {
+      data <- uploaded_data()
+      if (is.null(input$period_type) || identical(input$period_type, "")) {
+        updateSelectInput(
+          session,
+          "time_col",
+          choices = names(data),
+          selected = ""
+        )
+        return()
+      }
+
+      time_candidates <- detect_time_columns(data, input$period_type)
+      time_choices <- if (length(time_candidates) > 0) time_candidates else names(data)
+
+      updateSelectInput(
+        session,
+        "time_col",
+        choices = time_choices,
+        selected = if (length(time_candidates) == 1) time_candidates else ""
+      )
+    },
+    ignoreNULL = FALSE
+  )
+
+  # Update the default forecast horizon to match the selected time frequency.
+  observeEvent(input$period_type, {
+    if (is.null(input$period_type) || identical(input$period_type, "")) {
+      return()
+    }
+
+    updateNumericInput(
+      session,
+      "horizon",
+      value = default_horizon(input$period_type)
+    )
+  }, ignoreInit = TRUE)
+
+  # Freeze the prepared data only when the user explicitly requests new
+  # forecasts. This is the version used by Steps 2 to 4 until the next run.
+  prepared_input <- eventReactive(input$run_forecast, {
+    req(uploaded_data(), input$time_col, input$count_col, input$period_type)
+    applied_settings(isolate(current_settings()))
+    prepare_crime_input(
+      data = uploaded_data(),
+      time_col = input$time_col,
+      count_col = input$count_col,
+      period_type = input$period_type,
+      source_period_type = tryCatch(
+        detect_frequency_from_column(uploaded_data()[[input$time_col]]),
+        error = function(e) NULL
+      )
+    )
+  })
+
+  # Expose the prepared time series and the preparation metadata as separate
+  # reactives so the rest of the server code can use them directly.
+  prepared_series <- reactive({
+    req(prepared_input())
+    prepared_input()$ts_data
+  })
+
+  preparation_metadata <- reactive({
+    req(prepared_input())
+    prepared_input()$metadata
+  })
+
+  suitability <- reactive({
+    req(prepared_series(), input$period_type, input$horizon)
+    assess_series(prepared_series(), input$period_type, input$horizon)
+  })
+
+  forecast_result <- eventReactive(input$run_forecast, {
+    req(prepared_series(), input$horizon)
+    validate(
+      need(
+        input$horizon >= 1,
+        "The forecast horizon must be at least 1 period."
+      )
+    )
+    generate_forecast(
+      ts_data = prepared_series(),
+      period_type = input$period_type,
+      horizon = input$horizon
+    )
+  })
+
+  # Step 2 shows data checks, aggregation notes, and forecast reliability
+  # information based on the latest generated results.
+  output$reliability_ui <- renderUI({
+    req(forecast_result())
+    build_reliability_html(
+      ts_data = prepared_series(),
+      reliability = forecast_result()$reliability,
+      period_type = input$period_type,
+      horizon = input$horizon,
+      forecast_tbl = forecast_result()$forecast,
+      prep_metadata = preparation_metadata()
+    )
+  })
+
+  # Gray out Step 2 whenever Step 1 changes after the last run.
+  output$step2_panel <- renderUI({
+    div(
+      class = if (results_stale()) "results-stale" else NULL,
+      with_spinner(uiOutput("reliability_ui"))
+    )
+  })
+
+  # Add the unit label beside the horizon input, e.g. "weeks" or "years".
+  output$horizon_suffix <- renderUI({
+    suffix <- format_period_suffix(input$period_type, input$horizon)
+
+    if (identical(suffix, "")) {
+      return(NULL)
+    }
+
+    span(suffix)
+  })
+
+  # Draw the forecast chart with the last few observed points, the forecast
+  # path, and nested uncertainty bands.
+  output$forecast_plot <- renderPlot({
+    req(forecast_result(), prepared_series(), input$period_type)
+    config <- period_config(input$period_type)
+    history_tbl <- prepared_series() |>
+      tibble::as_tibble() |>
+      mutate(period_start = index_to_date(index))
+
+    recent_n <- min(config$recent_points, nrow(history_tbl))
+    history_tbl <- dplyr::slice_tail(history_tbl, n = recent_n)
+
+    forecast_tbl <- forecast_result()$forecast
+    bridge_tbl <- history_tbl |>
+      slice_tail(n = 1) |>
+      transmute(period_start, value = count, series = "Observed")
+    forecast_line_tbl <- dplyr::bind_rows(
+      bridge_tbl |>
+        transmute(period_start, value, series = "Forecast"),
+      forecast_tbl |>
+        transmute(period_start, value = forecast, series = "Forecast")
+    )
+    forecast_interval_tbl <- dplyr::bind_rows(
+      history_tbl |>
+        slice_tail(n = 1) |>
+        transmute(
+          period_start,
+          lower_50 = count,
+          upper_50 = count,
+          lower_80 = count,
+          upper_80 = count,
+          lower_95 = count,
+          upper_95 = count
+        ),
+      forecast_tbl |>
+        transmute(
+          period_start,
+          lower_50,
+          upper_50,
+          lower_80,
+          upper_80,
+          lower_95,
+          upper_95
+        )
+    )
+
+    ggplot() +
+      geom_ribbon(
+        data = forecast_interval_tbl,
+        aes(x = period_start, ymin = lower_95, ymax = upper_95),
+        fill = "#c6dbef",
+        alpha = 0.6
+      ) +
+      geom_ribbon(
+        data = forecast_interval_tbl,
+        aes(x = period_start, ymin = lower_80, ymax = upper_80),
+        fill = "#6baed6",
+        alpha = 0.55
+      ) +
+      geom_ribbon(
+        data = forecast_interval_tbl,
+        aes(x = period_start, ymin = lower_50, ymax = upper_50),
+        fill = "#2171b5",
+        alpha = 0.45
+      ) +
+      geom_line(
+        data = forecast_line_tbl,
+        aes(x = period_start, y = value, colour = series),
+        linewidth = 1
+      ) +
+      geom_point(
+        data = forecast_tbl,
+        aes(x = period_start, y = forecast, colour = "Forecast"),
+        size = 2
+      ) +
+      geom_line(
+        data = history_tbl,
+        aes(x = period_start, y = count, colour = "Observed"),
+        linewidth = 0.9
+      ) +
+      geom_point(
+        data = history_tbl,
+        aes(x = period_start, y = count, colour = "Observed"),
+        size = 2
+      ) +
+      scale_colour_manual(
+        values = c("Observed" = "#1b4965", "Forecast" = "#d94841"),
+        breaks = c("Observed", "Forecast"),
+        labels = c(
+          "Observed" = "last few periods of uploaded crime counts",
+          "Forecast" = "forecasts"
+        )
+      ) +
+      scale_x_date(labels = format_display_date) +
+      labs(
+        x = NULL,
+        y = "Crime count",
+        colour = NULL
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(
+        legend.position = "bottom"
+      )
+  })
+
+  # Gray out Step 3 whenever Step 1 changes after the last run.
+  output$step3_panel <- renderUI({
+    div(
+      class = if (results_stale()) "results-stale" else NULL,
+      with_spinner(plotOutput("forecast_plot", height = 420)),
+      div(
+        class = "mt-2 small text-muted",
+        p(
+          "The shaded bands show three levels of forecast uncertainty, known as confidence intervals."
+        ),
+        p(
+          strong("50% band:"),
+          "the narrower inner range where the future crime count is most likely to fall."
+        ),
+        p(
+          strong("80% band:"),
+          "a wider range covering outcomes that are still fairly plausible."
+        ),
+        p(
+          strong("95% band:"),
+          "the widest range, showing the full spread of outcomes that would not be surprising if recent patterns continue."
+        )
+      )
+    )
+  })
+
+  # Show the first few forecast rows in a simple table for quick inspection.
+  output$forecast_preview <- renderTable(
+    {
+      req(forecast_result())
+      forecast_result()$forecast |>
+        slice_head(n = 10) |>
+        select(
+          period_start,
+          forecast,
+          lower_50,
+          upper_50,
+          lower_80,
+          upper_80,
+          lower_95,
+          upper_95
+        ) |>
+        mutate(
+          period_start = format_display_date(period_start),
+          forecast = round(forecast, 1),
+          lower_50 = round(lower_50, 1),
+          upper_50 = round(upper_50, 1),
+          lower_80 = round(lower_80, 1),
+          upper_80 = round(upper_80, 1),
+          lower_95 = round(lower_95, 1),
+          upper_95 = round(upper_95, 1)
+        )
+    },
+    striped = TRUE,
+    bordered = TRUE,
+    spacing = "s",
+    width = "100%"
+  )
+
+  # Gray out Step 4 whenever Step 1 changes after the last run.
+  output$step4_panel <- renderUI({
+    div(
+      class = if (results_stale()) "results-stale" else NULL,
+      downloadButton("download_forecast", "Download CSV"),
+      p("The first 10 forecast periods are shown below."),
+      tableOutput("forecast_preview")
+    )
+  })
+
+  # Download the full forecast table as CSV.
+  output$download_forecast <- downloadHandler(
+    filename = function() {
+      paste0("crime-forecasts-", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      req(forecast_result())
+      readr::write_csv(forecast_result()$forecast, file)
+    }
+  )
 }
 
-# Run the application ----------------------------------------------------------
-shinyApp(ui = ui, server = server)
+
+# Create the Shiny app object that can be launched by shiny::runApp().
+app <- shinyApp(ui = app_ui, server = server)
+app
