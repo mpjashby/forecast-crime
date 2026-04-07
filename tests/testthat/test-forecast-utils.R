@@ -489,3 +489,96 @@ test_that("aggregated daily data can still produce weekly forecasts", {
   expect_false(any(is.na(result$forecast$lower_95)))
   expect_false(any(is.na(result$forecast$upper_95)))
 })
+
+
+test_that("forecast comparisons use the most recent matching historical window", {
+  data <- tibble::tibble(
+    period = seq.Date(as.Date("2022-01-01"), by = "month", length.out = 36),
+    crimes = seq(50, 85)
+  )
+
+  ts_data <- prepare_crime_ts(data, "period", "crimes", "month")
+  result <- generate_forecast(ts_data, "month", horizon = 6)
+  comparison <- build_forecast_comparison(
+    ts_data = ts_data,
+    forecast_tbl = result$forecast,
+    model_tbl = result$models,
+    period_type = "month",
+    horizon = 6,
+    same_threshold = 0.05,
+    same_minimum_crimes = 5,
+    n_simulations = 200
+  )
+
+  expected_recent_total <- sum(tail(ts_data$count, 6))
+  expected_band <- max(expected_recent_total * 0.05, 5)
+
+  expect_true(comparison$available)
+  expect_equal(comparison$comparison_total, expected_recent_total)
+  expect_equal(comparison$comparison_period_start, as.Date("2024-07-01"))
+  expect_equal(comparison$comparison_period_end, as.Date("2024-12-31"))
+  expect_equal(comparison$same_absolute_band, expected_band)
+  expect_equal(comparison$lower_same_cutoff, expected_recent_total - expected_band)
+  expect_equal(comparison$upper_same_cutoff, expected_recent_total + expected_band)
+  expect_equal(
+    comparison$probability_higher +
+      comparison$probability_same +
+      comparison$probability_lower,
+    1,
+    tolerance = 1e-8
+  )
+})
+
+
+test_that("forecast comparisons report when there is not enough history", {
+  ts_data <- tibble::tibble(
+    index = seq.Date(as.Date("2024-01-01"), by = "month", length.out = 4),
+    count = c(20, 22, 24, 23)
+  ) |>
+    tsibble::as_tsibble(index = index)
+
+  forecast_tbl <- tibble::tibble(
+    period_start = seq.Date(as.Date("2024-05-01"), by = "month", length.out = 6),
+    forecast = rep(25, 6)
+  )
+
+  comparison <- build_forecast_comparison(
+    ts_data = ts_data,
+    forecast_tbl = forecast_tbl,
+    model_tbl = NULL,
+    period_type = "month",
+    horizon = 6,
+    same_threshold = 0.05,
+    same_minimum_crimes = 5,
+    n_simulations = 100
+  )
+
+  expect_false(comparison$available)
+  expect_match(comparison$reason, "needs at least 6 historical months")
+})
+
+
+test_that("forecast comparisons use the minimum-crimes threshold when it is larger", {
+  data <- tibble::tibble(
+    period = seq.Date(as.Date("2022-01-01"), by = "month", length.out = 24),
+    crimes = rep(c(1, 2, 1, 2), length.out = 24)
+  )
+
+  ts_data <- prepare_crime_ts(data, "period", "crimes", "month")
+  result <- generate_forecast(ts_data, "month", horizon = 6)
+  comparison <- build_forecast_comparison(
+    ts_data = ts_data,
+    forecast_tbl = result$forecast,
+    model_tbl = result$models,
+    period_type = "month",
+    horizon = 6,
+    same_threshold = 0.05,
+    same_minimum_crimes = 5,
+    n_simulations = 200
+  )
+
+  expect_equal(comparison$comparison_total, 9)
+  expect_equal(comparison$same_absolute_band, 5)
+  expect_equal(comparison$lower_same_cutoff, 4)
+  expect_equal(comparison$upper_same_cutoff, 14)
+})

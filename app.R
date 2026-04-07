@@ -20,6 +20,14 @@ suppressPackageStartupMessages({
 # validation, aggregation, and modelling logic.
 source("R/forecast_utils.R", local = TRUE)
 
+# Store app-wide settings in one place so default behaviour can be adjusted
+# without searching through the UI and server code.
+app_settings <- list(
+  comparison_same_threshold = 0.05,
+  comparison_same_minimum_crimes = 5,
+  comparison_simulations = 2000L
+)
+
 # Wrap outputs in a spinner only when shinycssloaders is installed.
 with_spinner <- function(x) {
   if (requireNamespace("shinycssloaders", quietly = TRUE)) {
@@ -143,6 +151,10 @@ app_ui <- page_fixed(
       uiOutput("step4_panel")
     ),
     col_widths = c(8, 4)
+  ),
+  card(
+    card_header("Step 5. Compare forecasts with recent history"),
+    uiOutput("step5_panel")
   )
 )
 
@@ -158,7 +170,9 @@ server <- function(input, output, session) {
       count_col = input$count_col %||% "",
       horizon = input$horizon %||% NA_real_,
       include_public_holidays = isTRUE(input$include_public_holidays),
-      holiday_country = input$holiday_country %||% ""
+      holiday_country = input$holiday_country %||% "",
+      comparison_same_threshold = app_settings$comparison_same_threshold,
+      comparison_same_minimum_crimes = app_settings$comparison_same_minimum_crimes
     )
   })
 
@@ -305,6 +319,34 @@ server <- function(input, output, session) {
         NULL
       }
     )
+  })
+
+  # Step 5 compares the total across the forecast window with the total from
+  # the most recent matching historical window of the same length.
+  forecast_comparison <- eventReactive(input$run_forecast, {
+    req(forecast_result(), prepared_series(), input$period_type, input$horizon)
+    build_forecast_comparison(
+      ts_data = prepared_series(),
+      forecast_tbl = forecast_result()$forecast,
+      model_tbl = forecast_result()$models,
+      period_type = input$period_type,
+      horizon = input$horizon,
+      holiday_country = if (isTRUE(input$include_public_holidays)) {
+        input$holiday_country
+      } else {
+        NULL
+      },
+      same_threshold = app_settings$comparison_same_threshold,
+      same_minimum_crimes = app_settings$comparison_same_minimum_crimes,
+      n_simulations = app_settings$comparison_simulations
+    )
+  })
+
+  # Step 5 should only show inference results when Step 2 did not identify
+  # any reliability warnings in the latest forecast run.
+  step5_inference_available <- reactive({
+    req(forecast_result())
+    length(forecast_result()$reliability$warnings) == 0
   })
 
   # Step 2 shows data checks, aggregation notes, and forecast reliability
@@ -511,6 +553,45 @@ server <- function(input, output, session) {
       downloadButton("download_forecast", "Download CSV"),
       p("The first 10 forecast periods are shown below."),
       tableOutput("forecast_preview")
+    )
+  })
+
+  # Render the Step 5 content separately so the spinner can wrap a real Shiny
+  # output without leaving excess space after the result is shown.
+  output$step5_content <- renderUI({
+    req(forecast_result(), input$period_type)
+
+    if (!step5_inference_available()) {
+      return(
+        div(
+          style = paste(
+            "border-left: 4px solid #d94841;",
+            "padding: 0.9rem 1rem;",
+            "background-color: #fff5f5;"
+          ),
+          p(
+            "Step 5 comparisons are not shown because Step 2 identified reliability warnings in the current forecasts."
+          ),
+          p(
+            "If you fix the causes of those reliability warnings and then generate forecasts again, you will be able to see the Step 5 comparison results.",
+            style = "margin-bottom: 0;"
+          )
+        )
+      )
+    }
+
+    req(forecast_comparison())
+    build_forecast_comparison_html(
+      comparison = forecast_comparison(),
+      period_type = input$period_type
+    )
+  })
+
+  # Gray out Step 5 whenever Step 1 changes after the last run.
+  output$step5_panel <- renderUI({
+    div(
+      class = if (results_stale()) "results-stale" else NULL,
+      with_spinner(uiOutput("step5_content"))
     )
   })
 

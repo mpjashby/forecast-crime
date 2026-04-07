@@ -4,6 +4,38 @@ format_display_date <- function(x) {
 }
 
 
+# Format user-facing dates without leading zeros when they appear in prose.
+format_display_date_short <- function(x) {
+  trimws(format(as.Date(x), "%e %b %Y"))
+}
+
+
+# Format a date range compactly for prose, omitting the repeated year when both
+# dates fall in the same year.
+format_display_date_range <- function(start_date, end_date) {
+  start_date <- as.Date(start_date)
+  end_date <- as.Date(end_date)
+
+  if (identical(start_date, end_date)) {
+    return(format_display_date_short(start_date))
+  }
+
+  if (format(start_date, "%Y") == format(end_date, "%Y")) {
+    return(sprintf(
+      "%s to %s",
+      trimws(format(start_date, "%e %b")),
+      format_display_date_short(end_date)
+    ))
+  }
+
+  sprintf(
+    "%s to %s",
+    format_display_date_short(start_date),
+    format_display_date_short(end_date)
+  )
+}
+
+
 # Simple null-or-empty fallback helper used throughout the app.
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0 || identical(x, "")) {
@@ -41,7 +73,7 @@ period_config <- function(period_type) {
       singular = "week",
       plural = "weeks",
       adjective = "weekly",
-      min_history = 104,
+      min_history = 52,
       sparse_mean_threshold = 5,
       max_horizon = 52,
       recent_points = 12
@@ -507,7 +539,12 @@ add_public_holiday_regressor <- function(ts_data, period_type, country = NULL) {
 
 
 # Create future predictor values needed to forecast models with holiday terms.
-build_forecast_new_data <- function(ts_data, period_type, horizon, country = NULL) {
+build_forecast_new_data <- function(
+  ts_data,
+  period_type,
+  horizon,
+  country = NULL
+) {
   future_data <- tsibble::new_data(ts_data, n = horizon)
 
   if (is.null(country) || identical(country, "")) {
@@ -585,7 +622,12 @@ safe_choice_vector <- function(values, placeholder = NULL) {
 
 # Read a CSV file of uploaded crime counts.
 read_crime_data <- function(path) {
-  if (!is.character(path) || length(path) != 1 || is.na(path) || !file.exists(path)) {
+  if (
+    !is.character(path) ||
+      length(path) != 1 ||
+      is.na(path) ||
+      !file.exists(path)
+  ) {
     stop("The uploaded file could not be read safely.", call. = FALSE)
   }
 
@@ -935,7 +977,10 @@ prepare_crime_input <- function(
     stop("The selected crime-count column must be numeric.", call. = FALSE)
   }
 
-  if (inherits(data[[time_col]], "POSIXt") && !datetime_is_midnight_only(data[[time_col]])) {
+  if (
+    inherits(data[[time_col]], "POSIXt") &&
+      !datetime_is_midnight_only(data[[time_col]])
+  ) {
     stop(
       paste(
         "The selected time-period column contains date-time values with times other than midnight.",
@@ -1267,7 +1312,9 @@ fit_crime_models <- function(ts_data, period_type, holiday_country = NULL) {
 
   weekly_daily_ensemble <- function(data) {
     tslm_model <- if (include_public_holidays) {
-      fable::TSLM(count ~ trend() + season(period = "1 week") + public_holiday_count)
+      fable::TSLM(
+        count ~ trend() + season(period = "1 week") + public_holiday_count
+      )
     } else {
       fable::TSLM(count ~ trend() + season(period = "1 week"))
     }
@@ -1514,9 +1561,313 @@ index_to_date <- function(index) {
 
 # Describe the full historical range covered by a prepared time series.
 describe_series_range <- function(ts_data, period_type) {
-  start_text <- format_index_value(ts_data$index[[1]], period_type)
-  end_text <- format_index_value(ts_data$index[[nrow(ts_data)]], period_type)
-  sprintf("%s to %s", start_text, end_text)
+  start_text <- index_to_date(ts_data$index[[1]])
+  end_text <- index_to_date(ts_data$index[[nrow(ts_data)]])
+  format_display_date_range(
+    start_date = start_text,
+    end_date = period_end_date(end_text, period_type)
+  )
+}
+
+
+# Simulate complete future paths so the app can estimate probabilities for
+# totals across the whole forecast horizon, not just individual periods.
+simulate_forecast_paths <- function(
+  model_tbl,
+  ts_data,
+  period_type,
+  horizon,
+  holiday_country = NULL,
+  n_simulations = 2000L
+) {
+  future_data <- build_forecast_new_data(
+    ts_data = ts_data,
+    period_type = period_type,
+    horizon = horizon,
+    country = holiday_country
+  )
+
+  fabletools::generate(
+    model_tbl,
+    new_data = future_data,
+    times = as.integer(n_simulations)
+  ) |>
+    tibble::as_tibble() |>
+    dplyr::transmute(
+      .rep,
+      index,
+      simulated_count = pmax(0, .sim)
+    )
+}
+
+
+# Compare the total crime count across the forecast horizon with the total from
+# the most recent matching historical window of the same length.
+build_forecast_comparison <- function(
+  ts_data,
+  forecast_tbl,
+  model_tbl,
+  period_type,
+  horizon,
+  holiday_country = NULL,
+  same_threshold = 0.05,
+  same_minimum_crimes = 5,
+  n_simulations = 2000L
+) {
+  observed_tbl <- ts_data |>
+    tibble::as_tibble() |>
+    dplyr::arrange(index)
+
+  if (nrow(observed_tbl) < horizon) {
+    return(
+      list(
+        available = FALSE,
+        reason = sprintf(
+          paste(
+            "This comparison needs at least %s historical %s so it can match",
+            "the %s-period forecast window, but the uploaded data contain only %s."
+          ),
+          scales::comma(horizon),
+          period_config(period_type)$plural,
+          scales::comma(horizon),
+          scales::comma(nrow(observed_tbl))
+        )
+      )
+    )
+  }
+
+  comparison_window <- observed_tbl |>
+    dplyr::slice_tail(n = horizon)
+
+  comparison_total <- sum(comparison_window$count, na.rm = TRUE)
+  same_absolute_band <- max(
+    comparison_total * same_threshold,
+    same_minimum_crimes
+  )
+  lower_same_cutoff <- max(0, comparison_total - same_absolute_band)
+  upper_same_cutoff <- comparison_total + same_absolute_band
+
+  simulated_totals <- simulate_forecast_paths(
+    model_tbl = model_tbl,
+    ts_data = ts_data,
+    period_type = period_type,
+    horizon = horizon,
+    holiday_country = holiday_country,
+    n_simulations = n_simulations
+  ) |>
+    dplyr::group_by(.rep) |>
+    dplyr::summarise(
+      forecast_total = sum(simulated_count, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  point_forecast_total <- sum(forecast_tbl$forecast, na.rm = TRUE)
+
+  list(
+    available = TRUE,
+    comparison_total = comparison_total,
+    point_forecast_total = point_forecast_total,
+    forecast_periods = horizon,
+    same_threshold = same_threshold,
+    same_minimum_crimes = same_minimum_crimes,
+    same_absolute_band = same_absolute_band,
+    comparison_period_start = index_to_date(comparison_window$index[[1]]),
+    comparison_period_end = period_end_date(
+      index_to_date(comparison_window$index[[nrow(comparison_window)]]),
+      period_type
+    ),
+    forecast_period_start = forecast_tbl$period_start[[1]],
+    forecast_period_end = period_end_date(
+      forecast_tbl$period_start[[nrow(forecast_tbl)]],
+      period_type
+    ),
+    lower_same_cutoff = lower_same_cutoff,
+    upper_same_cutoff = upper_same_cutoff,
+    probability_higher = mean(
+      simulated_totals$forecast_total > upper_same_cutoff
+    ),
+    probability_lower = mean(
+      simulated_totals$forecast_total < lower_same_cutoff
+    ),
+    probability_same = mean(
+      simulated_totals$forecast_total >= lower_same_cutoff &
+        simulated_totals$forecast_total <= upper_same_cutoff
+    )
+  )
+}
+
+
+# Build the Step 5 HTML that explains how the full forecast window compares
+# with the most recent matching span from the uploaded historical data.
+build_forecast_comparison_html <- function(comparison, period_type) {
+  if (!isTRUE(comparison$available)) {
+    return(
+      htmltools::div(
+        style = paste(
+          "border-left: 4px solid #d94841;",
+          "padding: 0.75rem 1rem;",
+          "background-color: #fff5f5;"
+        ),
+        htmltools::p(comparison$reason, style = "margin-bottom: 0;")
+      )
+    )
+  }
+
+  # Format comparison probabilities as whole percentages for easier reading,
+  # while avoiding a misleading 0% label for very small but non-zero chances.
+  format_comparison_probability <- function(probability) {
+    if (is.na(probability) || !is.finite(probability) || probability <= 0) {
+      return("0%")
+    }
+
+    if (probability < 0.005) {
+      return("less than 1%")
+    }
+
+    sprintf("%s%%", round(probability * 100))
+  }
+
+  # Format crime-total cutoffs for the Step 5 cards in plain language.
+  format_crime_total <- function(value) {
+    scales::comma(round(value, 1))
+  }
+
+  make_probability_card <- function(
+    title,
+    probability,
+    description,
+    border_colour,
+    fill_colour
+  ) {
+    htmltools::div(
+      style = paste(
+        "border-top:",
+        sprintf("4px solid %s;", border_colour),
+        "background-color:",
+        fill_colour,
+        "; border-radius: 0.75rem;",
+        "padding: 1rem;"
+      ),
+      htmltools::p(
+        title,
+        style = "margin-bottom: 0.25rem; font-weight: 700;"
+      ),
+      htmltools::p(
+        format_comparison_probability(probability),
+        style = "margin-bottom: 0; font-size: 1.6rem; font-weight: 700;"
+      ),
+      htmltools::p(
+        description,
+        style = "margin-bottom: 0; margin-top: 0.35rem; font-size: 0.9rem; color: #5b6470;"
+      )
+    )
+  }
+
+  config <- period_config(period_type)
+
+  htmltools::tagList(
+    htmltools::p(
+      sprintf(
+        paste(
+          "These comparisons summarise the chance that the total number of crimes",
+          "across the next %s %s will be higher, lower, or about the same as the",
+          "total from the most recent %s %s in the uploaded data."
+        ),
+        scales::comma(comparison$forecast_periods),
+        config$plural,
+        scales::comma(comparison$forecast_periods),
+        config$plural
+      )
+    ),
+    htmltools::p(
+      sprintf(
+        paste(
+          "The number of crimes in the forecast is considered \"about the same\" as the number of crimes in the comparison period if the range of forecast crimes is within the larger of %s or %s crimes",
+          "of the historical comparison total.",
+          "The recent comparison window runs from %s, and the forecast window",
+          "runs from %s."
+        ),
+        scales::percent(comparison$same_threshold),
+        scales::comma(comparison$same_minimum_crimes),
+        format_display_date_range(
+          comparison$comparison_period_start,
+          comparison$comparison_period_end
+        ),
+        format_display_date_range(
+          comparison$forecast_period_start,
+          comparison$forecast_period_end
+        )
+      )
+    ),
+    bslib::layout_columns(
+      make_probability_card(
+        title = "Chance of being higher",
+        probability = comparison$probability_higher,
+        description = sprintf(
+          "%s or more crimes from %s",
+          format_crime_total(comparison$upper_same_cutoff),
+          format_display_date_range(
+            comparison$forecast_period_start,
+            comparison$forecast_period_end
+          )
+        ),
+        border_colour = "#b42318",
+        fill_colour = "#fff5f5"
+      ),
+      make_probability_card(
+        title = "Chance of being about the same",
+        probability = comparison$probability_same,
+        description = sprintf(
+          "%s to %s crimes from %s",
+          format_crime_total(comparison$lower_same_cutoff),
+          format_crime_total(comparison$upper_same_cutoff),
+          format_display_date_range(
+            comparison$forecast_period_start,
+            comparison$forecast_period_end
+          )
+        ),
+        border_colour = "#1d4ed8",
+        fill_colour = "#eff6ff"
+      ),
+      make_probability_card(
+        title = "Chance of being lower",
+        probability = comparison$probability_lower,
+        description = sprintf(
+          "%s or fewer crimes from %s",
+          format_crime_total(comparison$lower_same_cutoff),
+          format_display_date_range(
+            comparison$forecast_period_start,
+            comparison$forecast_period_end
+          )
+        ),
+        border_colour = "#047857",
+        fill_colour = "#ecfdf5"
+      ),
+      col_widths = c(4, 4, 4)
+    ),
+    htmltools::div(
+      style = paste(
+        "border-left: 4px solid #6baed6;",
+        "padding: 0.75rem 1rem;",
+        "background-color: #f4f9fd;",
+        "margin-top: 1rem;"
+      ),
+      htmltools::HTML(
+        sprintf(
+          paste(
+            "<p>The most recent %s %s in the uploaded data contain %s crimes in total.</p>",
+            "<p style='margin-bottom: 0;'>The most-likely forecast number of crimes across the next %s %s is %s crimes in total.</p>"
+          ),
+          scales::comma(comparison$forecast_periods),
+          config$plural,
+          scales::comma(round(comparison$comparison_total, 1)),
+          scales::comma(comparison$forecast_periods),
+          config$plural,
+          scales::comma(round(comparison$point_forecast_total, 1))
+        )
+      )
+    )
+  )
 }
 
 
@@ -1562,11 +1913,16 @@ build_reliability_html <- function(
   }
 
   horizon_line <- sprintf(
-    "<p>%s %s forecasts were generated, covering %s to %s.</p>",
+    "<p>%s %s forecasts were generated, covering %s.</p>",
     scales::comma(horizon),
     config$adjective,
-    format_display_date(forecast_tbl$period_start[[1]]),
-    format_display_date(forecast_tbl$period_start[[nrow(forecast_tbl)]])
+    format_display_date_range(
+      forecast_tbl$period_start[[1]],
+      period_end_date(
+        forecast_tbl$period_start[[nrow(forecast_tbl)]],
+        period_type
+      )
+    )
   )
 
   info_notes <- character()
