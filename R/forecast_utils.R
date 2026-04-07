@@ -272,6 +272,259 @@ detect_frequency_from_data <- function(data) {
 }
 
 
+# Supported public-holiday calendars that can be added to eligible models.
+public_holiday_country_catalog <- function() {
+  list(
+    uk = list(
+      label = "United Kingdom",
+      flag = "🇬🇧",
+      holiday_fun = function(years) timeDate::holidayLONDON(years)
+    ),
+    us = list(
+      label = "United States",
+      flag = "🇺🇸",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "USNewYearsDay",
+            "USMLKingsBirthday",
+            "USPresidentsDay",
+            "USMemorialDay",
+            "USJuneteenthNationalIndependenceDay",
+            "USIndependenceDay",
+            "USLaborDay",
+            "USColumbusDay",
+            "USVeteransDay",
+            "USThanksgivingDay",
+            "USChristmasDay"
+          )
+        )
+      }
+    ),
+    ca = list(
+      label = "Canada",
+      flag = "🇨🇦",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "NewYearsDay",
+            "GoodFriday",
+            "CAVictoriaDay",
+            "CACanadaDay",
+            "CACivicProvincialHoliday",
+            "CALabourDay",
+            "CAThanksgivingDay",
+            "CaRemembranceDay",
+            "ChristmasDay",
+            "BoxingDay"
+          )
+        )
+      }
+    ),
+    fr = list(
+      label = "France",
+      flag = "🇫🇷",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "NewYearsDay",
+            "EasterMonday",
+            "LaborDay",
+            "FRFetDeLaVictoire1945",
+            "FRAscension",
+            "FRBastilleDay",
+            "FRAssumptionVirginMary",
+            "AllSaints",
+            "FRArmisticeDay",
+            "ChristmasDay"
+          )
+        )
+      }
+    ),
+    de = list(
+      label = "Germany",
+      flag = "🇩🇪",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "NewYearsDay",
+            "GoodFriday",
+            "EasterMonday",
+            "LaborDay",
+            "DEAscension",
+            "DECorpusChristi",
+            "DEGermanUnity",
+            "ChristmasDay",
+            "BoxingDay"
+          )
+        )
+      }
+    ),
+    it = list(
+      label = "Italy",
+      flag = "🇮🇹",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "NewYearsDay",
+            "ITEpiphany",
+            "EasterSunday",
+            "EasterMonday",
+            "ITLiberationDay",
+            "LaborDay",
+            "ITAssumptionOfVirginMary",
+            "ITAllSaints",
+            "ITImmaculateConception",
+            "ChristmasDay",
+            "BoxingDay"
+          )
+        )
+      }
+    ),
+    jp = list(
+      label = "Japan",
+      flag = "🇯🇵",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "JPNewYearsDay",
+            "JPComingOfAgeDay",
+            "JPNatFoundationDay",
+            "JPVernalEquinox",
+            "JPGreeneryDay",
+            "JPConstitutionDay",
+            "JPChildrensDay",
+            "JPMarineDay",
+            "JPMountainDay",
+            "JPRespectForTheAgedDay",
+            "JPAutumnalEquinox",
+            "JPHealthandSportsDay",
+            "JPNationalCultureDay",
+            "JPThanksgivingDay",
+            "JPEmperorsBirthday"
+          )
+        )
+      }
+    ),
+    ch = list(
+      label = "Switzerland",
+      flag = "🇨🇭",
+      holiday_fun = function(years) {
+        timeDate::holiday(
+          years,
+          Holiday = c(
+            "NewYearsDay",
+            "CHBerchtoldsDay",
+            "GoodFriday",
+            "EasterMonday",
+            "LaborDay",
+            "CHAscension",
+            "CHSechselaeuten",
+            "CHConfederationDay",
+            "CHKnabenschiessen",
+            "ChristmasDay",
+            "BoxingDay"
+          )
+        )
+      }
+    )
+  )
+}
+
+
+# Labels for the Step 1 holiday-country dropdown.
+public_holiday_country_choices <- function(include_placeholder = TRUE) {
+  catalog <- public_holiday_country_catalog()
+  choices <- vapply(
+    catalog,
+    function(country) sprintf("%s %s", country$flag, country$label),
+    character(1)
+  )
+  values <- names(catalog)
+
+  if (include_placeholder) {
+    c("Choose a country" = "", stats::setNames(values, choices))
+  } else {
+    stats::setNames(values, choices)
+  }
+}
+
+
+# Return all public-holiday dates for the selected supported country.
+public_holiday_dates <- function(years, country) {
+  catalog <- public_holiday_country_catalog()
+
+  if (!country %in% names(catalog)) {
+    stop("Unsupported public-holiday country.", call. = FALSE)
+  }
+
+  dates <- catalog[[country]]$holiday_fun(sort(unique(as.integer(years))))
+  sort(unique(as.Date(dates)))
+}
+
+
+# Count how many public holidays fall within each modelled period.
+build_public_holiday_regressor <- function(index, period_type, country) {
+  start_dates <- index_to_date(index)
+  end_dates <- period_end_date(start_dates, period_type)
+  years <- seq.int(
+    min(lubridate::year(start_dates), lubridate::year(end_dates)),
+    max(lubridate::year(start_dates), lubridate::year(end_dates))
+  )
+  holiday_dates <- public_holiday_dates(years, country)
+
+  vapply(
+    seq_along(start_dates),
+    function(i) {
+      sum(holiday_dates >= start_dates[[i]] & holiday_dates <= end_dates[[i]])
+    },
+    integer(1)
+  )
+}
+
+
+# Add a public-holiday regressor to the prepared tsibble when requested.
+add_public_holiday_regressor <- function(ts_data, period_type, country = NULL) {
+  if (is.null(country) || identical(country, "")) {
+    return(ts_data)
+  }
+
+  ts_data |>
+    dplyr::mutate(
+      public_holiday_count = build_public_holiday_regressor(
+        index = index,
+        period_type = period_type,
+        country = country
+      )
+    )
+}
+
+
+# Create future predictor values needed to forecast models with holiday terms.
+build_forecast_new_data <- function(ts_data, period_type, horizon, country = NULL) {
+  future_data <- tsibble::new_data(ts_data, n = horizon)
+
+  if (is.null(country) || identical(country, "")) {
+    return(future_data)
+  }
+
+  future_data |>
+    dplyr::mutate(
+      public_holiday_count = build_public_holiday_regressor(
+        index = index,
+        period_type = period_type,
+        country = country
+      )
+    )
+}
+
+
 # Return the singular or plural time-period label for the horizon input.
 format_period_suffix <- function(period_type, n_periods) {
   if (
@@ -292,9 +545,76 @@ format_period_suffix <- function(period_type, n_periods) {
 }
 
 
+# Escape text so uploaded content cannot inject HTML into the UI.
+escape_uploaded_text <- function(x) {
+  escaped <- htmltools::htmlEscape(x, attribute = FALSE)
+  Encoding(escaped) <- "UTF-8"
+  escaped
+}
+
+
+# Sanitize uploaded column names and text values before the rest of the app
+# touches them.
+sanitize_uploaded_data <- function(data) {
+  names(data) <- vapply(names(data), escape_uploaded_text, character(1))
+
+  data |>
+    dplyr::mutate(
+      dplyr::across(
+        where(~ is.character(.x) || is.factor(.x)),
+        ~ escape_uploaded_text(as.character(.x))
+      )
+    )
+}
+
+
+# Build safe selectInput choices that display escaped labels but keep the
+# original column names as values.
+safe_choice_vector <- function(values, placeholder = NULL) {
+  values <- as.character(values)
+  labels <- vapply(values, escape_uploaded_text, character(1))
+  choices <- stats::setNames(values, labels)
+
+  if (!is.null(placeholder)) {
+    c(stats::setNames("", placeholder), choices)
+  } else {
+    choices
+  }
+}
+
+
 # Read a CSV file of uploaded crime counts.
 read_crime_data <- function(path) {
-  readr::read_csv(path, show_col_types = FALSE)
+  if (!is.character(path) || length(path) != 1 || is.na(path) || !file.exists(path)) {
+    stop("The uploaded file could not be read safely.", call. = FALSE)
+  }
+
+  file_info <- file.info(path)
+  if (is.na(file_info$size) || file_info$size <= 0) {
+    stop("The uploaded CSV file is empty.", call. = FALSE)
+  }
+
+  raw_header <- readBin(path, what = "raw", n = min(file_info$size, 4096))
+  raw_values <- as.integer(raw_header)
+  disallowed_control_bytes <- raw_values < 32L &
+    !raw_values %in% c(9L, 10L, 13L)
+  has_binary_bytes <- any(disallowed_control_bytes)
+
+  if (has_binary_bytes) {
+    stop(
+      "The uploaded file does not look like plain-text CSV data.",
+      call. = FALSE
+    )
+  }
+
+  data <- readr::read_csv(
+    path,
+    show_col_types = FALSE,
+    progress = FALSE,
+    name_repair = "minimal"
+  )
+
+  sanitize_uploaded_data(data)
 }
 
 
@@ -923,27 +1243,41 @@ assess_series <- function(ts_data, period_type, horizon) {
 # Fit an ensemble of forecasting models. The exact ensemble adapts to the data
 # frequency and the amount of available history so the app can still forecast
 # sensibly when seasonal models would be inappropriate.
-fit_crime_models <- function(ts_data, period_type) {
+fit_crime_models <- function(ts_data, period_type, holiday_country = NULL) {
   n_periods <- nrow(ts_data)
+  include_public_holidays <- !is.null(holiday_country) &&
+    !identical(holiday_country, "")
 
   nonseasonal_ensemble <- function(data) {
+    tslm_model <- if (include_public_holidays) {
+      fable::TSLM(count ~ trend() + public_holiday_count)
+    } else {
+      fable::TSLM(count ~ trend())
+    }
+
     fabletools::model(
       data,
       ensemble = fabletools::combination_model(
         fable::NAIVE(count),
         fable::ETS(count ~ error("A") + trend("A") + season("N")),
-        fable::TSLM(count ~ trend())
+        tslm_model
       )
     )
   }
 
   weekly_daily_ensemble <- function(data) {
+    tslm_model <- if (include_public_holidays) {
+      fable::TSLM(count ~ trend() + season(period = "1 week") + public_holiday_count)
+    } else {
+      fable::TSLM(count ~ trend() + season(period = "1 week"))
+    }
+
     fabletools::model(
       data,
       ensemble = fabletools::combination_model(
         fable::SNAIVE(count ~ lag(7)),
         fable::ETS(count ~ trend() + season(period = "1 week")),
-        fable::TSLM(count ~ trend() + season(period = "1 week")),
+        tslm_model,
         fabletools::decomposition_model(
           feasts::STL(count ~ trend() + season(period = "1 week")),
           fable::ETS(season_adjust)
@@ -961,17 +1295,28 @@ fit_crime_models <- function(ts_data, period_type) {
       return(weekly_daily_ensemble(ts_data))
     }
 
+    tslm_model <- if (include_public_holidays) {
+      fable::TSLM(
+        count ~ trend() +
+          season(period = "1 week") +
+          fourier(period = "1 year", K = 2) +
+          public_holiday_count
+      )
+    } else {
+      fable::TSLM(
+        count ~ trend() +
+          season(period = "1 week") +
+          fourier(period = "1 year", K = 2)
+      )
+    }
+
     return(
       fabletools::model(
         ts_data,
         ensemble = fabletools::combination_model(
           fable::SNAIVE(count ~ lag(7)),
           fable::ETS(count ~ trend() + season(period = "1 week")),
-          fable::TSLM(
-            count ~ trend() +
-              season(period = "1 week") +
-              fourier(period = "1 year", K = 2)
-          ),
+          tslm_model,
           fabletools::decomposition_model(
             feasts::STL(
               count ~
@@ -998,12 +1343,18 @@ fit_crime_models <- function(ts_data, period_type) {
     return(nonseasonal_ensemble(ts_data))
   }
 
+  tslm_model <- if (include_public_holidays) {
+    fable::TSLM(count ~ trend() + season() + public_holiday_count)
+  } else {
+    fable::TSLM(count ~ trend() + season())
+  }
+
   fabletools::model(
     ts_data,
     ensemble = fabletools::combination_model(
       fable::SNAIVE(count ~ lag()),
       fable::ETS(count ~ trend() + season()),
-      fable::TSLM(count ~ trend() + season()),
+      tslm_model,
       fabletools::decomposition_model(
         feasts::STL(count ~ trend() + season()),
         fable::ETS(season_adjust)
@@ -1014,12 +1365,24 @@ fit_crime_models <- function(ts_data, period_type) {
 
 
 # Generate point forecasts and 50/80/95% intervals from the fitted ensemble.
-generate_forecast <- function(ts_data, period_type, horizon) {
-  model_tbl <- fit_crime_models(ts_data, period_type)
+generate_forecast <- function(
+  ts_data,
+  period_type,
+  horizon,
+  holiday_country = NULL
+) {
+  ts_data <- add_public_holiday_regressor(ts_data, period_type, holiday_country)
+  model_tbl <- fit_crime_models(ts_data, period_type, holiday_country)
   accuracy_tbl <- fabletools::accuracy(model_tbl)
+  future_data <- build_forecast_new_data(
+    ts_data = ts_data,
+    period_type = period_type,
+    horizon = horizon,
+    country = holiday_country
+  )
 
   forecast_tbl <- model_tbl |>
-    fabletools::forecast(h = horizon, level = c(50, 80, 95)) |>
+    fabletools::forecast(new_data = future_data, level = c(50, 80, 95)) |>
     fabletools::hilo(level = c(50, 80, 95)) |>
     fabletools::unpack_hilo(`50%`, names_sep = "_") |>
     fabletools::unpack_hilo(`80%`, names_sep = "_") |>

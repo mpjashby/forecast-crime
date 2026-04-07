@@ -12,6 +12,33 @@ test_that("time and count columns are detected correctly", {
 })
 
 
+test_that("uploaded text content is HTML-escaped before use", {
+  data <- tibble::tibble(
+    `<script>alert(1)</script>` = c("2024-01-01", "2024-01-02"),
+    category = c("<img src=x onerror=alert(1)>", "plain")
+  )
+
+  sanitized <- sanitize_uploaded_data(data)
+
+  expect_equal(names(sanitized)[[1]], "&lt;script&gt;alert(1)&lt;/script&gt;")
+  expect_equal(
+    sanitized$category[[1]],
+    "&lt;img src=x onerror=alert(1)&gt;"
+  )
+})
+
+
+test_that("non-text uploads are rejected before parsing as CSV", {
+  path <- tempfile(fileext = ".csv")
+  writeBin(as.raw(c(0x00, 0x01, 0x02, 0x03)), path)
+
+  expect_error(
+    read_crime_data(path),
+    "does not look like plain-text CSV"
+  )
+})
+
+
 test_that("midnight-only datetime columns are treated as date columns", {
   data <- tibble::tibble(
     period = as.POSIXct(
@@ -123,6 +150,31 @@ test_that("time frequency can be detected from regular input data", {
   expect_equal(detect_frequency_from_data(monthly_data), "month")
   expect_equal(detect_frequency_from_data(annual_data), "year")
   expect_null(detect_frequency_from_data(irregular_data))
+})
+
+
+test_that("supported public-holiday countries are exposed for the UI", {
+  choices <- public_holiday_country_choices(include_placeholder = FALSE)
+
+  expect_true(any(grepl("United Kingdom", names(choices), fixed = TRUE)))
+  expect_true(any(grepl("United States", names(choices), fixed = TRUE)))
+  expect_true("uk" %in% unname(choices))
+  expect_true("us" %in% unname(choices))
+})
+
+
+test_that("public-holiday regressors count holidays within modelled periods", {
+  daily_index <- seq.Date(as.Date("2024-12-24"), by = "day", length.out = 4)
+  weekly_index <- tsibble::yearweek(as.Date("2024-12-23"))
+
+  expect_equal(
+    build_public_holiday_regressor(daily_index, "day", "uk"),
+    c(0L, 1L, 1L, 0L)
+  )
+  expect_equal(
+    build_public_holiday_regressor(weekly_index, "week", "uk"),
+    2L
+  )
 })
 
 
@@ -378,6 +430,27 @@ test_that("forecast generation returns forecast intervals", {
   expect_equal(nrow(result$forecast), 3)
   expect_true(all(c("forecast", "lower_95", "upper_95") %in% names(result$forecast)))
   expect_true(all(result$forecast$upper_95 >= result$forecast$lower_95))
+})
+
+
+test_that("forecast generation works with public-holiday regressors", {
+  ts_data <- tibble::tibble(
+    index = seq.Date(as.Date("2023-01-01"), by = "day", length.out = 400),
+    count = rep(c(8, 9, 10, 11, 12, 13, 14), length.out = 400)
+  ) |>
+    tsibble::as_tsibble(index = index)
+
+  result <- generate_forecast(
+    ts_data = ts_data,
+    period_type = "day",
+    horizon = 7,
+    holiday_country = "uk"
+  )
+
+  expect_equal(nrow(result$forecast), 7)
+  expect_false(any(is.na(result$forecast$forecast)))
+  expect_false(any(is.na(result$forecast$lower_95)))
+  expect_false(any(is.na(result$forecast$upper_95)))
 })
 
 

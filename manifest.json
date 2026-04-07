@@ -2391,6 +2391,31 @@
         "Built": "R 4.5.0; ; 2025-04-01 15:54:40 UTC; unix"
       }
     },
+    "timeDate": {
+      "Source": "CRAN",
+      "Repository": "https://cloud.r-project.org",
+      "description": {
+        "Package": "timeDate",
+        "Title": "Rmetrics - Chronological and Calendar Objects",
+        "Version": "4052.112",
+        "Authors@R": "c(person(\"Diethelm\", \"Wuertz\", role=\"aut\", comment = \"original code\")\n\t   , person(\"Tobias\", \"Setz\", role = c(\"aut\"), email = \"tobias.setz@live.com\")\n\t   , person(\"Yohan\", \"Chalabi\", role = \"aut\")\n\t   , person(\"Martin\",\"Maechler\", role = \"ctb\", email = \"maechler@stat.math.ethz.ch\",\n\t     comment = c(ORCID = \"0000-0002-8685-9910\"))\n\t   , person(given = c(\"Joe\", \"W.\"), family = \"Byers\", role = \"ctb\")\n\t   , person(given = c(\"Georgi\", \"N.\"), family = \"Boshnakov\", \n                    role = c(\"cre\", \"aut\"), email = \"georgi.boshnakov@manchester.ac.uk\",\n\t\t    comment = c(ORCID = \"0000-0003-2839-346X\")) )",
+        "Description": "The 'timeDate' class fulfils the conventions of the ISO 8601 \n\tstandard as well as of the ANSI C and POSIX standards. Beyond\n\tthese standards it provides the \"Financial Center\" concept\n\twhich allows to handle data records collected in different time \n\tzones and mix them up to have always the proper time stamps with \n\trespect to your personal financial center, or alternatively to the GMT\n\treference time. It can thus also handle time stamps from historical \n\tdata records from the same time zone, even if the financial \n\tcenters changed day light saving times at different calendar\n\tdates.",
+        "Depends": "R (>= 3.6.0), methods",
+        "Imports": "graphics, utils, stats",
+        "Suggests": "RUnit",
+        "License": "GPL (>= 2)",
+        "Encoding": "UTF-8",
+        "URL": "https://geobosh.github.io/timeDateDoc/ (doc),\nhttps://CRAN.R-project.org/package=timeDate,\nhttps://www.rmetrics.org",
+        "BugReports": "https://r-forge.r-project.org/tracker/?atid=633&group_id=156&func=browse",
+        "NeedsCompilation": "no",
+        "Packaged": "2026-01-26 09:43:57 UTC; georgi",
+        "Author": "Diethelm Wuertz [aut] (original code),\n  Tobias Setz [aut],\n  Yohan Chalabi [aut],\n  Martin Maechler [ctb] (ORCID: <https://orcid.org/0000-0002-8685-9910>),\n  Joe W. Byers [ctb],\n  Georgi N. Boshnakov [cre, aut] (ORCID:\n    <https://orcid.org/0000-0003-2839-346X>)",
+        "Maintainer": "Georgi N. Boshnakov <georgi.boshnakov@manchester.ac.uk>",
+        "Repository": "CRAN",
+        "Date/Publication": "2026-01-28 14:30:02 UTC",
+        "Built": "R 4.5.2; ; 2026-01-28 17:53:35 UTC; unix"
+      }
+    },
     "timechange": {
       "Source": "CRAN",
       "Repository": "https://cloud.r-project.org",
@@ -3760,7 +3785,7 @@
       "checksum": "b3136a962c78ed1216a17f6c0e30b9c0"
     },
     "app.R": {
-      "checksum": "c9d0ba068bade95a78ecc5a500be7e80"
+      "checksum": "bbae9d25c725f6a899fd34fbf0fd2700"
     },
     "fort_worth_assaults.csv": {
       "checksum": "8b6a6faf5f3d021181ac442ed21a9bed"
@@ -3769,10 +3794,10 @@
       "checksum": "4c0a0507f116c3431294d821a200c8de"
     },
     "R/forecast_utils.R": {
-      "checksum": "90a89b9cd62eef0343c5cbf08e591d8c"
+      "checksum": "8a7bfbdc705f2a8b6bc62b7f6e14dbce"
     },
     "README.md": {
-      "checksum": "3b616edcbbb9dab3a724d025c56e5aae"
+      "checksum": "f8550f85ca5e4a35bebd47ec937914dd"
     },
     "sample-data/daily-burglary-counts.csv": {
       "checksum": "cc04fef8f6db626245cfd100639f4085"
@@ -3820,7 +3845,7 @@
       "checksum": "cd18eeec9df5f3ad6a300ab198a35cf5"
     },
     "tests/testthat/test-forecast-utils.R": {
-      "checksum": "e450b239b0c5a17d54ad632ed9d4934c"
+      "checksum": "b1c6f10550611aac154def5e5a2ef9e5"
     }
   },
   "users": null

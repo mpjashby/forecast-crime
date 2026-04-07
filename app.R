@@ -111,6 +111,20 @@ app_ui <- page_fixed(
           uiOutput("horizon_suffix")
         )
       ),
+      checkboxInput(
+        inputId = "include_public_holidays",
+        label = "Include public holidays in the forecasts",
+        value = FALSE
+      ),
+      conditionalPanel(
+        condition = "input.include_public_holidays",
+        selectInput(
+          inputId = "holiday_country",
+          label = "Holiday calendar",
+          choices = public_holiday_country_choices(),
+          selected = ""
+        )
+      ),
       actionButton("run_forecast", "Generate forecasts", class = "btn-primary")
     ),
     card(
@@ -142,7 +156,9 @@ server <- function(input, output, session) {
       period_type = input$period_type %||% "",
       time_col = input$time_col %||% "",
       count_col = input$count_col %||% "",
-      horizon = input$horizon %||% NA_real_
+      horizon = input$horizon %||% NA_real_,
+      include_public_holidays = isTRUE(input$include_public_holidays),
+      holiday_country = input$holiday_country %||% ""
     )
   })
 
@@ -177,7 +193,7 @@ server <- function(input, output, session) {
       updateSelectInput(
         session,
         "count_col",
-        choices = names(data),
+        choices = safe_choice_vector(names(data), placeholder = "Choose a column"),
         selected = if (length(numeric_cols) == 1) numeric_cols else ""
       )
 
@@ -200,7 +216,7 @@ server <- function(input, output, session) {
         updateSelectInput(
           session,
           "time_col",
-          choices = names(data),
+          choices = safe_choice_vector(names(data), placeholder = "Choose a column"),
           selected = ""
         )
         return()
@@ -212,7 +228,7 @@ server <- function(input, output, session) {
       updateSelectInput(
         session,
         "time_col",
-        choices = time_choices,
+        choices = safe_choice_vector(time_choices, placeholder = "Choose a column"),
         selected = if (length(time_candidates) == 1) time_candidates else ""
       )
     },
@@ -272,12 +288,22 @@ server <- function(input, output, session) {
       need(
         input$horizon >= 1,
         "The forecast horizon must be at least 1 period."
+      ),
+      need(
+        !isTRUE(input$include_public_holidays) ||
+          !identical(input$holiday_country %||% "", ""),
+        "Please choose a country if you want to include public holidays."
       )
     )
     generate_forecast(
       ts_data = prepared_series(),
       period_type = input$period_type,
-      horizon = input$horizon
+      horizon = input$horizon,
+      holiday_country = if (isTRUE(input$include_public_holidays)) {
+        input$holiday_country
+      } else {
+        NULL
+      }
     )
   })
 
