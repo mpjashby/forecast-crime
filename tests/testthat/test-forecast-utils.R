@@ -433,6 +433,50 @@ test_that("forecast generation returns forecast intervals", {
 })
 
 
+test_that("daily forecasts with exactly 14 observations do not return all-NA output", {
+  ts_data <- tibble::tibble(
+    index = seq.Date(as.Date("2025-01-01"), by = "day", length.out = 14),
+    count = c(12, 15, 11, 14, 13, 10, 9, 12, 16, 14, 13, 11, 12, 15)
+  ) |>
+    tsibble::as_tsibble(index = index)
+
+  result <- generate_forecast(ts_data, "day", horizon = 7)
+
+  expect_equal(nrow(result$forecast), 7)
+  expect_false(any(is.na(result$forecast$forecast)))
+  expect_false(any(is.na(result$forecast$lower_95)))
+  expect_false(any(is.na(result$forecast$upper_95)))
+})
+
+
+test_that("monthly forecasts at the two-year boundary still produce valid values", {
+  data <- tibble::tibble(
+    period = seq.Date(as.Date("2022-01-01"), by = "month", length.out = 24),
+    crimes = rep(c(1, 2, 1, 2), length.out = 24)
+  )
+
+  ts_data <- prepare_crime_ts(data, "period", "crimes", "month")
+  result <- generate_forecast(ts_data, "month", horizon = 6)
+
+  expect_equal(nrow(result$forecast), 6)
+  expect_false(any(is.na(result$forecast$forecast)))
+})
+
+
+test_that("weekly forecasts at the annual boundary still produce valid values", {
+  data <- tibble::tibble(
+    period = seq.Date(as.Date("2020-01-06"), by = "week", length.out = 52),
+    crimes = rep(c(1, 2, 1, 2), length.out = 52)
+  )
+
+  ts_data <- prepare_crime_ts(data, "period", "crimes", "week")
+  result <- generate_forecast(ts_data, "week", horizon = 6)
+
+  expect_equal(nrow(result$forecast), 6)
+  expect_false(any(is.na(result$forecast$forecast)))
+})
+
+
 test_that("forecast generation works with public-holiday regressors", {
   ts_data <- tibble::tibble(
     index = seq.Date(as.Date("2023-01-01"), by = "day", length.out = 400),

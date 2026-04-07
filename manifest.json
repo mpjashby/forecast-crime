@@ -3785,7 +3785,7 @@
       "checksum": "b3136a962c78ed1216a17f6c0e30b9c0"
     },
     "app.R": {
-      "checksum": "8147858574599a56f80ce0f8f0352baf"
+      "checksum": "71de9319992941234dd0a199b4e5c763"
     },
     "fort_worth_assaults.csv": {
       "checksum": "8b6a6faf5f3d021181ac442ed21a9bed"
@@ -3794,7 +3794,7 @@
       "checksum": "4c0a0507f116c3431294d821a200c8de"
     },
     "R/forecast_utils.R": {
-      "checksum": "245dac1be3b8d5343203a670a93615ca"
+      "checksum": "0f9ff2eaec192b53616e9679fa0d0fbf"
     },
     "README.md": {
       "checksum": "f8550f85ca5e4a35bebd47ec937914dd"
@@ -3845,7 +3845,7 @@
       "checksum": "cd18eeec9df5f3ad6a300ab198a35cf5"
     },
     "tests/testthat/test-forecast-utils.R": {
-      "checksum": "4a67fdd6da706c47937c26dd3ec791c3"
+      "checksum": "1f84b92d3f9ac38890d69f0c1a17c35c"
     }
   },
   "users": null

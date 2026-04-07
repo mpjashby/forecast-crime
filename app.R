@@ -42,20 +42,36 @@ with_spinner <- function(x) {
 app_ui <- page_fixed(
   title = "Crime count forecasting",
   theme = bs_theme(version = 5, bootswatch = "flatly"),
-  tags$style(HTML("
+  tags$style(HTML(
+    "
     .results-stale {
       opacity: 0.45;
       filter: grayscale(0.25);
     }
-  ")),
+  "
+  )),
   card(
     card_body(
       h2("Forecast crime counts"),
-      p(
+      p(HTML(
         "This app forecasts future crime counts based on patterns in",
         "historical crime data. The forecasts indicate how many crimes are",
-        "likely to happen in future if recent patterns in crime continue."
-      )
+        "likely to happen in future if recent patterns in crime continue. The ",
+        "forecasts are created using an ensemble forecasting model that ",
+        "<a href=\"https://doi.org/10.21428/cb6ab371.8c79f146\">Ashby (2023)</a> ",
+        "found to be most accurate for forecasting crime."
+      )),
+      p(
+        strong(
+          "Just like weather forecasts, these crime forecasts are not perfect ",
+          "predictions of the future."
+        ),
+        "They are best used as a guide to what ",
+        "might happen if recent patterns continue, rather than a precise ",
+        "prediction of what will happen. The forecast uncertainty intervals ",
+        "shown at Step 3 indicate the range of crime counts that would not be ",
+        "surprising based on recent patterns."
+      ),
     )
   ),
   layout_columns(
@@ -155,6 +171,10 @@ app_ui <- page_fixed(
   card(
     card_header("Step 5. Compare forecasts with recent history"),
     uiOutput("step5_panel")
+  ),
+  card(
+    card_header("Step 6. Understand how these forecasts are produced"),
+    uiOutput("step6_panel")
   )
 )
 
@@ -181,7 +201,8 @@ server <- function(input, output, session) {
   # Mark the result panels as stale whenever the user changes Step 1 after
   # generating forecasts.
   results_stale <- reactive({
-    !is.null(applied_settings()) && !identical(applied_settings(), current_settings())
+    !is.null(applied_settings()) &&
+      !identical(applied_settings(), current_settings())
   })
 
   uploaded_data <- reactive({
@@ -207,7 +228,10 @@ server <- function(input, output, session) {
       updateSelectInput(
         session,
         "count_col",
-        choices = safe_choice_vector(names(data), placeholder = "Choose a column"),
+        choices = safe_choice_vector(
+          names(data),
+          placeholder = "Choose a column"
+        ),
         selected = if (length(numeric_cols) == 1) numeric_cols else ""
       )
 
@@ -230,19 +254,29 @@ server <- function(input, output, session) {
         updateSelectInput(
           session,
           "time_col",
-          choices = safe_choice_vector(names(data), placeholder = "Choose a column"),
+          choices = safe_choice_vector(
+            names(data),
+            placeholder = "Choose a column"
+          ),
           selected = ""
         )
         return()
       }
 
       time_candidates <- detect_time_columns(data, input$period_type)
-      time_choices <- if (length(time_candidates) > 0) time_candidates else names(data)
+      time_choices <- if (length(time_candidates) > 0) {
+        time_candidates
+      } else {
+        names(data)
+      }
 
       updateSelectInput(
         session,
         "time_col",
-        choices = safe_choice_vector(time_choices, placeholder = "Choose a column"),
+        choices = safe_choice_vector(
+          time_choices,
+          placeholder = "Choose a column"
+        ),
         selected = if (length(time_candidates) == 1) time_candidates else ""
       )
     },
@@ -250,17 +284,21 @@ server <- function(input, output, session) {
   )
 
   # Update the default forecast horizon to match the selected time frequency.
-  observeEvent(input$period_type, {
-    if (is.null(input$period_type) || identical(input$period_type, "")) {
-      return()
-    }
+  observeEvent(
+    input$period_type,
+    {
+      if (is.null(input$period_type) || identical(input$period_type, "")) {
+        return()
+      }
 
-    updateNumericInput(
-      session,
-      "horizon",
-      value = default_horizon(input$period_type)
-    )
-  }, ignoreInit = TRUE)
+      updateNumericInput(
+        session,
+        "horizon",
+        value = default_horizon(input$period_type)
+      )
+    },
+    ignoreInit = TRUE
+  )
 
   # Freeze the prepared data only when the user explicitly requests new
   # forecasts. This is the version used by Steps 2 to 4 until the next run.
@@ -592,6 +630,27 @@ server <- function(input, output, session) {
     div(
       class = if (results_stale()) "results-stale" else NULL,
       with_spinner(uiOutput("step5_content"))
+    )
+  })
+
+  # Step 6 explains the modelling approach used for the current forecast run
+  # in plain language for non-technical users.
+  output$step6_panel <- renderUI({
+    req(prepared_series(), input$period_type)
+
+    div(
+      class = if (results_stale()) "results-stale" else NULL,
+      HTML(
+        build_modelling_explanation(
+          ts_data = prepared_series(),
+          period_type = input$period_type,
+          holiday_country = if (isTRUE(input$include_public_holidays)) {
+            input$holiday_country
+          } else {
+            NULL
+          }
+        )
+      )
     )
   })
 

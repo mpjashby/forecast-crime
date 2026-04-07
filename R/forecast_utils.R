@@ -562,6 +562,12 @@ build_forecast_new_data <- function(
 }
 
 
+# Format short vectors into plain-English lists.
+oxford_comma <- function(x) {
+  str_flatten_comma(na.omit(x), last = ", and ")
+}
+
+
 # Return the singular or plural time-period label for the horizon input.
 format_period_suffix <- function(period_type, n_periods) {
   if (
@@ -1334,7 +1340,10 @@ fit_crime_models <- function(ts_data, period_type, holiday_country = NULL) {
   }
 
   if (identical(period_type, "day")) {
-    if (n_periods < 14) {
+    # The weekly seasonal daily ensemble needs more than exactly two weekly
+    # cycles. With only 14 daily observations, the STL component warns and the
+    # combined forecast can silently collapse to all-NA output.
+    if (n_periods <= 14) {
       return(nonseasonal_ensemble(ts_data))
     }
 
@@ -1382,11 +1391,17 @@ fit_crime_models <- function(ts_data, period_type, holiday_country = NULL) {
     return(nonseasonal_ensemble(ts_data))
   }
 
-  if (identical(period_type, "week") && n_periods < 52) {
+  # Weekly seasonal models become brittle right at the first annual-cycle
+  # boundary, so keep the non-seasonal ensemble until there is a little more
+  # than a year of weekly history available.
+  if (identical(period_type, "week") && n_periods <= 53) {
     return(nonseasonal_ensemble(ts_data))
   }
 
-  if (identical(period_type, "month") && n_periods < 12) {
+  # Monthly seasonal models can also return null/NA forecasts at exact yearly
+  # boundaries, so only switch once there is comfortably more than two years of
+  # monthly history.
+  if (identical(period_type, "month") && n_periods <= 24) {
     return(nonseasonal_ensemble(ts_data))
   }
 
@@ -1407,6 +1422,110 @@ fit_crime_models <- function(ts_data, period_type, holiday_country = NULL) {
         fable::ETS(season_adjust)
       )
     )
+  )
+}
+
+
+# Build a plain-English explanation of the modelling approach used for the
+# current forecast run so non-technical users can understand what happened.
+build_modelling_explanation <- function(
+  ts_data,
+  period_type,
+  holiday_country = NULL
+) {
+  n_periods <- nrow(ts_data)
+  include_public_holidays <- !is.null(holiday_country) &&
+    !identical(holiday_country, "")
+
+  model_names <- if (
+    identical(period_type, "year") ||
+      (identical(period_type, "week") && n_periods <= 53) ||
+      (identical(period_type, "month") && n_periods <= 24) ||
+      (identical(period_type, "day") && n_periods <= 14)
+  ) {
+    c(
+      "a 'näive' model",
+      "an ETS (error, trend, seasonality) model",
+      "a time-series linear regression (TSLM) model"
+    )
+  } else {
+    c(
+      "a seasonal 'näive' model",
+      "an ETS (error, trend, seasonality) model",
+      "a time-series linear regression (TSLM) model",
+      "a time-series decomposition (STL) model"
+    )
+  }
+
+  seasonal_variables <- if (identical(period_type, "day")) {
+    if (n_periods <= 14) {
+      character(0)
+    } else if (n_periods < 365) {
+      "repeating day-of-week patterns"
+    } else {
+      c("repeating day-of-week patterns", "repeating patterns across the year")
+    }
+  } else if (
+    identical(period_type, "year") ||
+      (identical(period_type, "week") && n_periods <= 53) ||
+      (identical(period_type, "month") && n_periods <= 24)
+  ) {
+    character(0)
+  } else if (identical(period_type, "week")) {
+    "repeating patterns across the year"
+  } else if (identical(period_type, "month")) {
+    "repeating patterns across the year"
+  } else {
+    character(0)
+  }
+
+  variables <- c(
+    "the past crime counts",
+    "the passage of time so the models can pick up any general upward or downward trend",
+    seasonal_variables
+  )
+
+  if (include_public_holidays) {
+    variables <- c(
+      variables,
+      "the number of public holidays falling in each period"
+    )
+  }
+
+  model_sentence <- str_glue(
+    "For this dataset, the ensemble combines {oxford_comma(model_names)}."
+  )
+
+  variable_sentence <- str_glue(
+    "These models are based on {oxford_comma(variables)}."
+  )
+
+  holiday_sentence <- if (include_public_holidays) {
+    " Public holidays were included because they can affect crime levels in some periods."
+  } else {
+    ""
+  }
+
+  str_glue(
+    "<p>These forecasts were produced using a statistical technique called an ",
+    "<em>ensemble model</em>, in which multiple different forecasting models ",
+    "are generated and then the final forecast is produced by combining the ",
+    "forecasts produced by the different models. Testing has shown this ",
+    "approach usually produces more-accurate forecasts than relying on any ",
+    "single model, because it allows the strengths of different models to be ",
+    "combined and the weaknesses of individual models to be balanced out.</p>",
+    "<p>In this case, the ensemble combined the results of ",
+    "{length(model_names)} models, each of which identifies trends and ",
+    "patterns in the historical crime counts that can be projected into the ",
+    "future. {model_sentence} {variable_sentence}{holiday_sentence}</p>",
+    "<p><strong>It is very important to remember that these forecasts are ",
+    "based on the assumption that the factors that drove this type of crime ",
+    "in this area in the past will continue to be the factors that drive ",
+    "crime in this area in the future</strong>. If the factors driving crime ",
+    "in this area change, for example because of a change in policing tactics ",
+    "or a major change in the local environment (e.g. a new housing ",
+    "development being built) it is possible that the frequency of crime will ",
+    "change.</p>"
   )
 }
 
@@ -1446,6 +1565,35 @@ generate_forecast <- function(
       lower_95 = pmax(0, `95%_lower`),
       upper_95 = pmax(0, `95%_upper`)
     )
+
+  forecast_value_columns <- c(
+    "forecast",
+    "lower_50",
+    "upper_50",
+    "lower_80",
+    "upper_80",
+    "lower_95",
+    "upper_95"
+  )
+
+  if (
+    nrow(forecast_tbl) == 0 ||
+      any(vapply(forecast_tbl[forecast_value_columns], anyNA, logical(1))) ||
+      any(vapply(
+        forecast_tbl[forecast_value_columns],
+        function(x) any(!is.finite(x)),
+        logical(1)
+      ))
+  ) {
+    stop(
+      paste(
+        "The fitted forecasting models could not produce valid forecast values for this dataset.",
+        "This usually means there is not enough history for one or more model components.",
+        "Please try forecasting a coarser time frequency or upload a longer series."
+      ),
+      call. = FALSE
+    )
+  }
 
   reliability <- assess_forecast_reliability(
     accuracy_tbl = accuracy_tbl,
