@@ -46,6 +46,18 @@ format_display_date_range <- function(start_date, end_date) {
 }
 
 
+# Render a Bootstrap alert box using the classes already bundled with Shiny.
+bootstrap_alert <- function(type = c("info", "warning", "danger"), ...) {
+  type <- match.arg(type)
+
+  htmltools::div(
+    class = paste("alert", paste0("alert-", type)),
+    role = "alert",
+    ...
+  )
+}
+
+
 # Central configuration for each supported time frequency.
 # To change how the app behaves for daily, weekly, monthly, or annual data,
 # update the matching block here. This is the main place to manage:
@@ -157,6 +169,38 @@ is_regular_date_sequence <- function(dates, by) {
 }
 
 
+# Return TRUE when a numeric column can be safely interpreted as calendar years.
+is_strict_numeric_year_column <- function(column) {
+  if (!is.numeric(column)) {
+    return(FALSE)
+  }
+
+  non_missing <- column[!is.na(column)]
+
+  if (length(non_missing) == 0 || any(!is.finite(non_missing))) {
+    return(FALSE)
+  }
+
+  whole_years <- floor(non_missing) == non_missing
+
+  if (!all(whole_years)) {
+    return(FALSE)
+  }
+
+  years <- as.integer(non_missing)
+  valid_years <- years >= 1000 & years <= 9999
+
+  if (!all(valid_years)) {
+    return(FALSE)
+  }
+
+  is_regular_date_sequence(
+    as.Date(sprintf("%04d-01-01", sort(unique(years)))),
+    "year"
+  )
+}
+
+
 # Convert raw dates to the start of their containing day/week/month/year.
 period_start_from_date <- function(dates, period_type) {
   dates <- as.Date(dates)
@@ -174,7 +218,7 @@ period_start_from_date <- function(dates, period_type) {
 
 # Return the final calendar date covered by a given period.
 period_end_date <- function(period_start, period_type) {
-  start_date <- as.Date(period_start)
+  start_date <- index_to_date(period_start)
 
   switch(
     period_type,
@@ -272,6 +316,14 @@ detect_frequency_from_column <- function(column) {
     }
   }
 
+  if (is_strict_numeric_year_column(column)) {
+    return("year")
+  }
+
+  if (is.numeric(column)) {
+    return(NULL)
+  }
+
   parsed_year <- tryCatch(parse_year_values(column), error = function(e) NULL)
   if (!is.null(parsed_year) && is_complete_parse(parsed_year, column)) {
     year_dates <- sort(unique(as.Date(parsed_year)))
@@ -305,6 +357,11 @@ detect_frequency_from_data <- function(data) {
 
 
 # Supported public-holiday calendars that can be added to eligible models.
+resolve_time_date_holidays <- function(names) {
+  lapply(names, getExportedValue, ns = "timeDate")
+}
+
+
 public_holiday_country_catalog <- function() {
   list(
     uk = list(
@@ -318,7 +375,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "USNewYearsDay",
             "USMLKingsBirthday",
             "USPresidentsDay",
@@ -330,7 +387,7 @@ public_holiday_country_catalog <- function() {
             "USVeteransDay",
             "USThanksgivingDay",
             "USChristmasDay"
-          )
+          ))
         )
       }
     ),
@@ -340,7 +397,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "NewYearsDay",
             "GoodFriday",
             "CAVictoriaDay",
@@ -351,7 +408,7 @@ public_holiday_country_catalog <- function() {
             "CaRemembranceDay",
             "ChristmasDay",
             "BoxingDay"
-          )
+          ))
         )
       }
     ),
@@ -361,7 +418,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "NewYearsDay",
             "EasterMonday",
             "LaborDay",
@@ -372,7 +429,7 @@ public_holiday_country_catalog <- function() {
             "AllSaints",
             "FRArmisticeDay",
             "ChristmasDay"
-          )
+          ))
         )
       }
     ),
@@ -382,7 +439,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "NewYearsDay",
             "GoodFriday",
             "EasterMonday",
@@ -392,7 +449,7 @@ public_holiday_country_catalog <- function() {
             "DEGermanUnity",
             "ChristmasDay",
             "BoxingDay"
-          )
+          ))
         )
       }
     ),
@@ -402,7 +459,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "NewYearsDay",
             "ITEpiphany",
             "EasterSunday",
@@ -414,7 +471,7 @@ public_holiday_country_catalog <- function() {
             "ITImmaculateConception",
             "ChristmasDay",
             "BoxingDay"
-          )
+          ))
         )
       }
     ),
@@ -424,7 +481,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "JPNewYearsDay",
             "JPComingOfAgeDay",
             "JPNatFoundationDay",
@@ -440,7 +497,7 @@ public_holiday_country_catalog <- function() {
             "JPNationalCultureDay",
             "JPThanksgivingDay",
             "JPEmperorsBirthday"
-          )
+          ))
         )
       }
     ),
@@ -450,7 +507,7 @@ public_holiday_country_catalog <- function() {
       holiday_fun = function(years) {
         timeDate::holiday(
           years,
-          Holiday = c(
+          Holiday = resolve_time_date_holidays(c(
             "NewYearsDay",
             "CHBerchtoldsDay",
             "GoodFriday",
@@ -462,7 +519,7 @@ public_holiday_country_catalog <- function() {
             "CHKnabenschiessen",
             "ChristmasDay",
             "BoxingDay"
-          )
+          ))
         )
       }
     )
@@ -1113,8 +1170,10 @@ prepare_crime_input <- function(
     !is.na(period_rank(detected_source_period)) &&
     period_rank(detected_source_period) < period_rank(period_type)
 
+  partial_initial_period_removed <- FALSE
   partial_final_period_removed <- FALSE
-  removed_period_label <- NULL
+  removed_initial_period_label <- NULL
+  removed_final_period_label <- NULL
 
   if (is_aggregated) {
     observed_target_map <- observed_source_tbl |>
@@ -1147,19 +1206,31 @@ prepare_crime_input <- function(
     )
 
     if (any(incomplete_target_flags)) {
-      incomplete_targets <- target_periods[incomplete_target_flags]
-      final_target <- target_periods[[length(target_periods)]]
+      incomplete_target_positions <- which(incomplete_target_flags)
+      allowed_positions <- c(1, length(target_periods))
+      unexpected_positions <- setdiff(incomplete_target_positions, allowed_positions)
 
-      if (
-        length(incomplete_targets) == 1 &&
-          identical(
-            as.character(incomplete_targets[[1]]),
-            as.character(final_target)
+      if (length(unexpected_positions) == 0) {
+        first_target_position <- 1
+        final_target_position <- length(target_periods)
+
+        if (first_target_position %in% incomplete_target_positions) {
+          partial_initial_period_removed <- TRUE
+          removed_initial_period_label <- format_index_value(
+            target_periods[[first_target_position]],
+            period_type
           )
-      ) {
-        partial_final_period_removed <- TRUE
-        removed_period_label <- format_index_value(final_target, period_type)
-        target_tbl <- dplyr::slice_head(target_tbl, n = nrow(target_tbl) - 1)
+          target_tbl <- dplyr::slice(target_tbl, -first_target_position)
+        }
+
+        if (final_target_position %in% incomplete_target_positions) {
+          partial_final_period_removed <- TRUE
+          removed_final_period_label <- format_index_value(
+            target_periods[[final_target_position]],
+            period_type
+          )
+          target_tbl <- dplyr::slice_head(target_tbl, n = nrow(target_tbl) - 1)
+        }
       } else {
         stop(
           paste(
@@ -1168,8 +1239,8 @@ prepare_crime_input <- function(
             period_config(period_type)$plural,
             "for forecasting.",
             "This usually means there are missing periods within the data or that the",
-            "data start part-way through a larger period. Please upload data with all",
-            "source periods present or choose a different time frequency."
+            "data start or end part-way through a larger period. Please upload data",
+            "with all source periods present or choose a different time frequency."
           ),
           call. = FALSE
         )
@@ -1181,8 +1252,8 @@ prepare_crime_input <- function(
         paste(
           "The uploaded data do not contain any complete",
           period_config(period_type)$plural,
-          "after removing the partial final period. Please upload a longer series or",
-          "choose a finer time frequency."
+          "after removing partial periods at the start or end. Please upload a longer",
+          "series or choose a finer time frequency."
         ),
         call. = FALSE
       )
@@ -1195,14 +1266,24 @@ prepare_crime_input <- function(
     period_type
   )
 
+  if (identical(period_type, "year")) {
+    complete_index <- lubridate::year(index_to_date(complete_index))
+    target_tbl <- target_tbl |>
+      dplyr::mutate(target_index = lubridate::year(index_to_date(target_index)))
+  }
+
   ts_data <- tibble::tibble(index = complete_index) |>
     dplyr::left_join(
       dplyr::rename(target_tbl, index = target_index),
       by = "index"
     ) |>
     dplyr::mutate(count = dplyr::coalesce(count, 0)) |>
-    tsibble::as_tsibble(index = index) |>
-    tsibble::fill_gaps(count = 0)
+    tsibble::as_tsibble(index = index)
+
+  if (!identical(period_type, "year")) {
+    ts_data <- ts_data |>
+      tsibble::fill_gaps(count = 0)
+  }
 
   list(
     ts_data = ts_data,
@@ -1210,8 +1291,10 @@ prepare_crime_input <- function(
       source_period_type = detected_source_period,
       target_period_type = period_type,
       is_aggregated = is_aggregated,
+      partial_initial_period_removed = partial_initial_period_removed,
       partial_final_period_removed = partial_final_period_removed,
-      removed_period_label = removed_period_label
+      removed_initial_period_label = removed_initial_period_label,
+      removed_final_period_label = removed_final_period_label
     )
   )
 }
@@ -1695,6 +1778,15 @@ format_index_value <- function(index, period_type) {
 
 # Convert tsibble index classes to plain Date objects for plotting and display.
 index_to_date <- function(index) {
+  if (is.numeric(index)) {
+    years <- suppressWarnings(as.integer(index))
+    valid_years <- !is.na(years) & years >= 1000 & years <= 9999
+
+    if (all(valid_years)) {
+      return(as.Date(sprintf("%04d-01-01", years)))
+    }
+  }
+
   if (inherits(index, "Date")) {
     return(as.Date(index))
   }
@@ -1850,26 +1942,26 @@ build_forecast_comparison <- function(
 build_forecast_comparison_html <- function(comparison, period_type) {
   if (!isTRUE(comparison$available)) {
     return(
-      htmltools::div(
-        style = paste(
-          "border-left: 4px solid #d94841;",
-          "padding: 0.75rem 1rem;",
-          "background-color: #fff5f5;"
-        ),
-        htmltools::p(comparison$reason, style = "margin-bottom: 0;")
+      bootstrap_alert(
+        "danger",
+        htmltools::p(comparison$reason, class = "mb-0")
       )
     )
   }
 
   # Format comparison probabilities as whole percentages for easier reading,
-  # while avoiding a misleading 0% label for very small but non-zero chances.
+  # while avoiding a misleading impression of certainty at either extreme.
   format_comparison_probability <- function(probability) {
-    if (is.na(probability) || !is.finite(probability) || probability <= 0) {
-      return("0%")
+    if (is.na(probability) || !is.finite(probability)) {
+      return("less than 1%")
     }
 
     if (probability < 0.005) {
       return("less than 1%")
+    }
+
+    if (probability >= 0.995) {
+      return("more than 99%")
     }
 
     sprintf("%s%%", round(probability * 100))
@@ -1993,18 +2085,13 @@ build_forecast_comparison_html <- function(comparison, period_type) {
       ),
       col_widths = c(4, 4, 4)
     ),
-    htmltools::div(
-      style = paste(
-        "border-left: 4px solid #6baed6;",
-        "padding: 0.75rem 1rem;",
-        "background-color: #f4f9fd;",
-        "margin-top: 1rem;"
-      ),
+    bootstrap_alert(
+      "info",
       htmltools::HTML(
         sprintf(
           paste(
             "<p>The most recent %s %s in the uploaded data contain %s crimes in total.</p>",
-            "<p style='margin-bottom: 0;'>The most-likely forecast number of crimes across the next %s %s is %s crimes in total.</p>"
+            "<p class='mb-0'>The most-likely forecast number of crimes across the next %s %s is %s crimes in total.</p>"
           ),
           scales::comma(comparison$forecast_periods),
           config$plural,
@@ -2014,6 +2101,36 @@ build_forecast_comparison_html <- function(comparison, period_type) {
           scales::comma(round(comparison$point_forecast_total, 1))
         )
       )
+    )
+  )
+}
+
+
+# Explain why Step 5 comparison cards are hidden when Step 2 found forecast
+# reliability warnings that make those comparisons too uncertain to trust.
+build_step5_unavailable_html <- function(reliability) {
+  warnings <- reliability$warnings %||% character()
+
+  warning_list <- if (length(warnings) > 0) {
+    htmltools::tags$ul(
+      class = "mb-3",
+      lapply(warnings, function(warning) {
+        htmltools::tags$li(warning)
+      })
+    )
+  } else {
+    NULL
+  }
+
+  bootstrap_alert(
+    "danger",
+    htmltools::p(
+      "Step 5 comparisons are not shown because the current forecasts are too uncertain for those comparisons to be reliable."
+    ),
+    warning_list,
+    htmltools::p(
+      "Step 2 identified reliability warnings in this forecast run. When those warnings are present, the app cannot reliably judge whether the forecast total is higher, lower, or about the same as recent history.",
+      class = "mb-0"
     )
   )
 }
@@ -2074,6 +2191,7 @@ build_reliability_html <- function(
   )
 
   info_notes <- character()
+  warning_notes <- character()
 
   if (!is.null(prep_metadata) && isTRUE(prep_metadata$is_aggregated)) {
     info_notes <- c(
@@ -2088,27 +2206,47 @@ build_reliability_html <- function(
 
   if (
     !is.null(prep_metadata) &&
+      isTRUE(prep_metadata$partial_initial_period_removed)
+  ) {
+    warning_notes <- c(
+      warning_notes,
+      sprintf(
+        "<p>The first %s period (%s) contained only partial data because the uploaded series begins part-way through that %s, so it was removed before forecasting.</p>",
+        period_config(prep_metadata$target_period_type)$singular,
+        prep_metadata$removed_initial_period_label,
+        period_config(prep_metadata$target_period_type)$singular
+      )
+    )
+  }
+
+  if (
+    !is.null(prep_metadata) &&
       isTRUE(prep_metadata$partial_final_period_removed)
   ) {
-    info_notes <- c(
-      info_notes,
+    warning_notes <- c(
+      warning_notes,
       sprintf(
-        "<p>The final %s period (%s) contained only partial data, so it was removed and the forecasts now start from the last complete period.</p>",
+        "<p>The final %s period (%s) contained only partial data because the uploaded series ends part-way through that %s, so it was removed and the forecasts now start from the last complete period.</p>",
         period_config(prep_metadata$target_period_type)$singular,
-        prep_metadata$removed_period_label
+        prep_metadata$removed_final_period_label,
+        period_config(prep_metadata$target_period_type)$singular
       )
     )
   }
 
   info_html <- if (length(info_notes) > 0) {
-    htmltools::div(
-      style = paste(
-        "border-left: 4px solid #6baed6;",
-        "padding: 0.75rem 1rem;",
-        "background-color: #f4f9fd;",
-        "margin-bottom: 1rem;"
-      ),
+    bootstrap_alert(
+      "info",
       htmltools::HTML(paste0(info_notes, collapse = ""))
+    )
+  } else {
+    NULL
+  }
+
+  warning_html <- if (length(warning_notes) > 0) {
+    bootstrap_alert(
+      "warning",
+      htmltools::HTML(paste0(warning_notes, collapse = ""))
     )
   } else {
     NULL
@@ -2123,8 +2261,13 @@ build_reliability_html <- function(
           horizon_line
         )),
         info_html,
-        htmltools::HTML(
-          "<p style='color: #1f5130; font-weight: 600;'>No major reliability warnings were triggered.</p>"
+        warning_html,
+        bootstrap_alert(
+          "info",
+          htmltools::p(
+            "No major reliability warnings were triggered.",
+            class = "mb-0 fw-semibold"
+          )
         )
       )
     )
@@ -2140,16 +2283,12 @@ build_reliability_html <- function(
       )
     ),
     info_html,
-    htmltools::div(
-      style = paste(
-        "border: 2px solid #d94841;",
-        "border-radius: 0.75rem;",
-        "padding: 1rem 1.25rem;",
-        "background-color: #fff5f5;"
-      ),
+    warning_html,
+    bootstrap_alert(
+      "danger",
       htmltools::HTML(
         paste0(
-          "<p style='color: #b42318; font-weight: 700; margin-bottom: 0.5rem;'>Warnings about reliability:</p><ul style='color: #7a271a; margin-bottom: 0;'>",
+          "<p class='fw-bold mb-2'>Warnings about reliability:</p><ul class='mb-0'>",
           items,
           "</ul>"
         )

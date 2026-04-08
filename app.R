@@ -37,6 +37,52 @@ with_spinner <- function(x) {
   }
 }
 
+
+format_user_facing_error <- function(
+  error,
+  fallback = "Something went wrong while generating the forecasts."
+) {
+  message <- conditionMessage(error) %||% ""
+  message <- trimws(message)
+
+  if (!nzchar(message) || identical(message, "[Object object]")) {
+    fallback
+  } else {
+    message
+  }
+}
+
+
+run_with_user_facing_errors <- function(expr, fallback) {
+  tryCatch(
+    expr,
+    error = function(error) {
+      stop(shiny::safeError(format_user_facing_error(error, fallback)))
+    }
+  )
+}
+
+
+render_ui_with_alert_errors <- function(expr, fallback = NULL) {
+  renderUI({
+    tryCatch(
+      expr,
+      error = function(error) {
+        message <- format_user_facing_error(error, fallback %||% "")
+
+        if (!nzchar(message)) {
+          return(NULL)
+        }
+
+        bootstrap_alert(
+          "danger",
+          p(message, class = "mb-0")
+        )
+      }
+    )
+  })
+}
+
 # Build the Shiny user interface. Step 1 collects inputs, while Steps 2 to 4
 # display model diagnostics, forecasts, and downloadable outputs.
 app_ui <- page_fixed(
@@ -45,7 +91,7 @@ app_ui <- page_fixed(
   tags$style(HTML(
     "
     .results-stale {
-      opacity: 0.45;
+      opacity: 0.3;
       filter: grayscale(0.25);
     }
   "
@@ -77,12 +123,13 @@ app_ui <- page_fixed(
   layout_columns(
     card(
       card_header("Step 1. Upload and configure data"),
-      p(
-        "Upload a CSV file of existing crime counts. The file should have one",
-        "row for each time period. Each row should have two columns, one",
-        "containing the date of the start of each forecast period and one",
-        "column containing the number of crimes for that period."
-      ),
+      p(HTML(
+        "Upload a <abbr title=\"Comma-Separated Values\">CSV</abbr> file of",
+        "existing crime counts. The file should have one row for each time",
+        "period. Each row should have two columns, one containing the date of",
+        "the start of each forecast period and one column containing the",
+        "number of crimes for that period."
+      )),
       fileInput(
         inputId = "datafile",
         label = NULL,
@@ -300,42 +347,11 @@ server <- function(input, output, session) {
     ignoreInit = TRUE
   )
 
-  # Freeze the prepared data only when the user explicitly requests new
-  # forecasts. This is the version used by Steps 2 to 4 until the next run.
-  prepared_input <- eventReactive(input$run_forecast, {
+  # Freeze the current Step 1 settings and all downstream outputs together
+  # whenever the user explicitly requests new forecasts. This keeps Steps 2 to
+  # 6 internally consistent even if the user edits Step 1 afterwards.
+  forecast_run <- eventReactive(input$run_forecast, {
     req(uploaded_data(), input$time_col, input$count_col, input$period_type)
-    applied_settings(isolate(current_settings()))
-    prepare_crime_input(
-      data = uploaded_data(),
-      time_col = input$time_col,
-      count_col = input$count_col,
-      period_type = input$period_type,
-      source_period_type = tryCatch(
-        detect_frequency_from_column(uploaded_data()[[input$time_col]]),
-        error = function(e) NULL
-      )
-    )
-  })
-
-  # Expose the prepared time series and the preparation metadata as separate
-  # reactives so the rest of the server code can use them directly.
-  prepared_series <- reactive({
-    req(prepared_input())
-    prepared_input()$ts_data
-  })
-
-  preparation_metadata <- reactive({
-    req(prepared_input())
-    prepared_input()$metadata
-  })
-
-  suitability <- reactive({
-    req(prepared_series(), input$period_type, input$horizon)
-    assess_series(prepared_series(), input$period_type, input$horizon)
-  })
-
-  forecast_result <- eventReactive(input$run_forecast, {
-    req(prepared_series(), input$horizon)
     validate(
       need(
         input$horizon >= 1,
@@ -347,37 +363,99 @@ server <- function(input, output, session) {
         "Please choose a country if you want to include public holidays."
       )
     )
-    generate_forecast(
-      ts_data = prepared_series(),
-      period_type = input$period_type,
-      horizon = input$horizon,
-      holiday_country = if (isTRUE(input$include_public_holidays)) {
-        input$holiday_country
-      } else {
-        NULL
-      }
+
+    settings <- isolate(current_settings())
+    prepared <- prepare_crime_input(
+      data = uploaded_data(),
+      time_col = settings$time_col,
+      count_col = settings$count_col,
+      period_type = settings$period_type,
+      source_period_type = tryCatch(
+        detect_frequency_from_column(uploaded_data()[[settings$time_col]]),
+        error = function(e) NULL
+      )
     )
+
+    forecast <- run_with_user_facing_errors(
+      generate_forecast(
+        ts_data = prepared$ts_data,
+        period_type = settings$period_type,
+        horizon = settings$horizon,
+        holiday_country = if (isTRUE(settings$include_public_holidays)) {
+          settings$holiday_country
+        } else {
+          NULL
+        }
+      ),
+      fallback = paste(
+        "The forecasts could not be generated with the current settings.",
+        "Please check the selected holiday country and try again."
+      )
+    )
+
+    comparison <- if (length(forecast$reliability$warnings) == 0) {
+      run_with_user_facing_errors(
+        build_forecast_comparison(
+          ts_data = prepared$ts_data,
+          forecast_tbl = forecast$forecast,
+          model_tbl = forecast$models,
+          period_type = settings$period_type,
+          horizon = settings$horizon,
+          holiday_country = if (isTRUE(settings$include_public_holidays)) {
+            settings$holiday_country
+          } else {
+            NULL
+          },
+          same_threshold = app_settings$comparison_same_threshold,
+          same_minimum_crimes = app_settings$comparison_same_minimum_crimes,
+          n_simulations = app_settings$comparison_simulations
+        ),
+        fallback = paste(
+          "The forecast comparison could not be generated.",
+          "Please try regenerating the forecasts."
+        )
+      )
+    } else {
+      NULL
+    }
+
+    applied_settings(settings)
+
+    list(
+      settings = settings,
+      prepared = prepared,
+      forecast = forecast,
+      comparison = comparison
+    )
+  })
+
+  # Expose the frozen run settings, prepared time series, and metadata
+  # separately so the renderers can all use the same forecast snapshot.
+  run_settings <- reactive({
+    req(forecast_run())
+    forecast_run()$settings
+  })
+
+  prepared_series <- reactive({
+    req(forecast_run())
+    forecast_run()$prepared$ts_data
+  })
+
+  preparation_metadata <- reactive({
+    req(forecast_run())
+    forecast_run()$prepared$metadata
+  })
+
+  forecast_result <- reactive({
+    req(forecast_run())
+    forecast_run()$forecast
   })
 
   # Step 5 compares the total across the forecast window with the total from
   # the most recent matching historical window of the same length.
-  forecast_comparison <- eventReactive(input$run_forecast, {
-    req(forecast_result(), prepared_series(), input$period_type, input$horizon)
-    build_forecast_comparison(
-      ts_data = prepared_series(),
-      forecast_tbl = forecast_result()$forecast,
-      model_tbl = forecast_result()$models,
-      period_type = input$period_type,
-      horizon = input$horizon,
-      holiday_country = if (isTRUE(input$include_public_holidays)) {
-        input$holiday_country
-      } else {
-        NULL
-      },
-      same_threshold = app_settings$comparison_same_threshold,
-      same_minimum_crimes = app_settings$comparison_same_minimum_crimes,
-      n_simulations = app_settings$comparison_simulations
-    )
+  forecast_comparison <- reactive({
+    req(forecast_run())
+    forecast_run()$comparison
   })
 
   # Step 5 should only show inference results when Step 2 did not identify
@@ -389,13 +467,13 @@ server <- function(input, output, session) {
 
   # Step 2 shows data checks, aggregation notes, and forecast reliability
   # information based on the latest generated results.
-  output$reliability_ui <- renderUI({
-    req(forecast_result())
+  output$reliability_ui <- render_ui_with_alert_errors({
+    req(forecast_result(), run_settings())
     build_reliability_html(
       ts_data = prepared_series(),
       reliability = forecast_result()$reliability,
-      period_type = input$period_type,
-      horizon = input$horizon,
+      period_type = run_settings()$period_type,
+      horizon = run_settings()$horizon,
       forecast_tbl = forecast_result()$forecast,
       prep_metadata = preparation_metadata()
     )
@@ -423,8 +501,8 @@ server <- function(input, output, session) {
   # Draw the forecast chart with the last few observed points, the forecast
   # path, and nested uncertainty bands.
   output$forecast_plot <- renderPlot({
-    req(forecast_result(), prepared_series(), input$period_type)
-    config <- period_config(input$period_type)
+    req(forecast_result(), prepared_series(), run_settings())
+    config <- period_config(run_settings()$period_type)
     history_tbl <- prepared_series() |>
       tibble::as_tibble() |>
       mutate(period_start = index_to_date(index))
@@ -526,7 +604,9 @@ server <- function(input, output, session) {
   })
 
   # Gray out Step 3 whenever Step 1 changes after the last run.
-  output$step3_panel <- renderUI({
+  output$step3_panel <- render_ui_with_alert_errors({
+    req(forecast_result(), prepared_series(), run_settings())
+
     div(
       class = if (results_stale()) "results-stale" else NULL,
       with_spinner(plotOutput("forecast_plot", height = 420)),
@@ -585,7 +665,9 @@ server <- function(input, output, session) {
   )
 
   # Gray out Step 4 whenever Step 1 changes after the last run.
-  output$step4_panel <- renderUI({
+  output$step4_panel <- render_ui_with_alert_errors({
+    req(forecast_result())
+
     div(
       class = if (results_stale()) "results-stale" else NULL,
       downloadButton("download_forecast", "Download CSV"),
@@ -596,33 +678,18 @@ server <- function(input, output, session) {
 
   # Render the Step 5 content separately so the spinner can wrap a real Shiny
   # output without leaving excess space after the result is shown.
-  output$step5_content <- renderUI({
-    req(forecast_result(), input$period_type)
+  output$step5_content <- render_ui_with_alert_errors({
+    req(forecast_result(), run_settings())
 
     if (!step5_inference_available()) {
-      return(
-        div(
-          style = paste(
-            "border-left: 4px solid #d94841;",
-            "padding: 0.9rem 1rem;",
-            "background-color: #fff5f5;"
-          ),
-          p(
-            "Step 5 comparisons are not shown because Step 2 identified reliability warnings in the current forecasts."
-          ),
-          p(
-            "If you fix the causes of those reliability warnings and then generate forecasts again, you will be able to see the Step 5 comparison results.",
-            style = "margin-bottom: 0;"
-          )
-        )
+      build_step5_unavailable_html(forecast_result()$reliability)
+    } else {
+      req(forecast_comparison())
+      build_forecast_comparison_html(
+        comparison = forecast_comparison(),
+        period_type = run_settings()$period_type
       )
     }
-
-    req(forecast_comparison())
-    build_forecast_comparison_html(
-      comparison = forecast_comparison(),
-      period_type = input$period_type
-    )
   })
 
   # Gray out Step 5 whenever Step 1 changes after the last run.
@@ -635,17 +702,17 @@ server <- function(input, output, session) {
 
   # Step 6 explains the modelling approach used for the current forecast run
   # in plain language for non-technical users.
-  output$step6_panel <- renderUI({
-    req(prepared_series(), input$period_type)
+  output$step6_panel <- render_ui_with_alert_errors({
+    req(prepared_series(), run_settings())
 
     div(
       class = if (results_stale()) "results-stale" else NULL,
       HTML(
         build_modelling_explanation(
           ts_data = prepared_series(),
-          period_type = input$period_type,
-          holiday_country = if (isTRUE(input$include_public_holidays)) {
-            input$holiday_country
+          period_type = run_settings()$period_type,
+          holiday_country = if (isTRUE(run_settings()$include_public_holidays)) {
+            run_settings()$holiday_country
           } else {
             NULL
           }

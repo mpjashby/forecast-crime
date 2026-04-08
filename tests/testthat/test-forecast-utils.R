@@ -119,6 +119,102 @@ test_that("datetime columns with non-zero times produce a user-facing error when
 })
 
 
+test_that("reliability HTML uses bootstrap alerts for info, warning, and danger states", {
+  ts_data <- tsibble::as_tsibble(
+    tibble::tibble(
+      index = seq.Date(as.Date("2024-01-01"), by = "month", length.out = 24),
+      count = rep(10, 24)
+    ),
+    index = index
+  )
+
+  forecast_tbl <- tibble::tibble(
+    period_start = seq.Date(as.Date("2026-01-01"), by = "month", length.out = 3)
+  )
+
+  reliability_ok <- list(
+    summary = list(n_periods = 24, mean_count = 10),
+    mape = 12.5,
+    warnings = character()
+  )
+
+  prep_metadata <- list(
+    is_aggregated = TRUE,
+    source_period_type = "day",
+    target_period_type = "month",
+    partial_initial_period_removed = TRUE,
+    removed_initial_period_label = "Jan 2024",
+    partial_final_period_removed = FALSE
+  )
+
+  ok_html <- htmltools::renderTags(
+    build_reliability_html(
+      ts_data = ts_data,
+      reliability = reliability_ok,
+      period_type = "month",
+      horizon = 3,
+      forecast_tbl = forecast_tbl,
+      prep_metadata = prep_metadata
+    )
+  )$html
+
+  expect_match(ok_html, "alert alert-info")
+  expect_match(ok_html, "alert alert-warning")
+
+  reliability_bad <- modifyList(
+    reliability_ok,
+    list(warnings = "Forecast horizon is too long for the available history.")
+  )
+
+  bad_html <- htmltools::renderTags(
+    build_reliability_html(
+      ts_data = ts_data,
+      reliability = reliability_bad,
+      period_type = "month",
+      horizon = 3,
+      forecast_tbl = forecast_tbl,
+      prep_metadata = prep_metadata
+    )
+  )$html
+
+  expect_match(bad_html, "alert alert-danger")
+})
+
+
+test_that("unavailable comparison HTML uses a bootstrap danger alert", {
+  html <- htmltools::renderTags(
+    build_forecast_comparison_html(
+      comparison = list(
+        available = FALSE,
+        reason = "The comparison could not be produced."
+      ),
+      period_type = "month"
+    )
+  )$html
+
+  expect_match(html, "alert alert-danger")
+})
+
+
+test_that("Step 5 unavailable HTML explains that warnings make comparisons unreliable", {
+  html <- htmltools::renderTags(
+    build_step5_unavailable_html(
+      reliability = list(
+        warnings = c(
+          "The 95% intervals are very wide relative to the forecast level, indicating high uncertainty.",
+          "Historical fit is weak (MAPE about 35%), so future forecasts may be unreliable."
+        )
+      )
+    )
+  )$html
+
+  expect_match(html, "alert alert-danger")
+  expect_match(html, "too uncertain")
+  expect_match(html, "high uncertainty")
+  expect_match(html, "cannot reliably judge")
+})
+
+
 test_that("time frequency can be detected from regular input data", {
   daily_data <- tibble::tibble(
     day_start = seq.Date(as.Date("2024-01-01"), by = "day", length.out = 10),
@@ -178,6 +274,15 @@ test_that("public-holiday regressors count holidays within modelled periods", {
 })
 
 
+test_that("US public holidays can be generated without attaching timeDate", {
+  us_holidays <- public_holiday_dates(2020:2021, "us")
+
+  expect_true(as.Date("2020-01-01") %in% us_holidays)
+  expect_true(as.Date("2020-07-04") %in% us_holidays)
+  expect_true(as.Date("2021-12-25") %in% us_holidays)
+})
+
+
 test_that("individual regular date columns are not misclassified across frequencies", {
   daily_values <- seq.Date(as.Date("2024-01-01"), by = "day", length.out = 10)
   weekly_values <- seq.Date(as.Date("2024-01-01"), by = "week", length.out = 8)
@@ -188,6 +293,15 @@ test_that("individual regular date columns are not misclassified across frequenc
   expect_equal(detect_frequency_from_column(weekly_values), "week")
   expect_equal(detect_frequency_from_column(monthly_values), "month")
   expect_equal(detect_frequency_from_column(annual_values), "year")
+})
+
+
+test_that("numeric annual columns are detected only when they are strict year sequences", {
+  expect_equal(detect_frequency_from_column(2015:2024), "year")
+  expect_null(detect_frequency_from_column(c(2015, 2016, 2018, 2019)))
+  expect_null(detect_frequency_from_column(c(2015, 2016.5, 2017.0, 2018)))
+  expect_null(detect_frequency_from_column(c(999, 1000, 1001, 1002)))
+  expect_null(detect_frequency_from_column(c(10000, 10001, 10002)))
 })
 
 
@@ -219,9 +333,37 @@ test_that("finer data are aggregated and partial final aggregated periods are re
   )
 
   expect_true(prepared$metadata$is_aggregated)
+  expect_false(prepared$metadata$partial_initial_period_removed)
   expect_true(prepared$metadata$partial_final_period_removed)
+  expect_null(prepared$metadata$removed_initial_period_label)
+  expect_equal(prepared$metadata$removed_final_period_label, "08 Jan 2024")
   expect_equal(nrow(prepared$ts_data), 1)
   expect_equal(prepared$ts_data$count, sum(data$crimes[1:7]))
+})
+
+
+test_that("finer data can drop partial aggregated periods at both the start and end", {
+  data <- tibble::tibble(
+    day_start = seq.Date(as.Date("2010-01-01"), as.Date("2019-12-31"), by = "day"),
+    crimes = rep(1, 3652)
+  )
+
+  prepared <- prepare_crime_input(
+    data = data,
+    time_col = "day_start",
+    count_col = "crimes",
+    period_type = "week",
+    source_period_type = "day"
+  )
+
+  expect_true(prepared$metadata$is_aggregated)
+  expect_true(prepared$metadata$partial_initial_period_removed)
+  expect_true(prepared$metadata$partial_final_period_removed)
+  expect_equal(prepared$metadata$removed_initial_period_label, "28 Dec 2009")
+  expect_equal(prepared$metadata$removed_final_period_label, "30 Dec 2019")
+  expect_equal(tsibble::yearweek(as.Date("2010-01-04")), prepared$ts_data$index[[1]])
+  expect_equal(tsibble::yearweek(as.Date("2019-12-23")), prepared$ts_data$index[[nrow(prepared$ts_data)]])
+  expect_true(all(prepared$ts_data$count == 7))
 })
 
 
@@ -339,6 +481,7 @@ test_that("daily data can aggregate to month when only the final month is partia
   )
 
   expect_true(prepared$metadata$is_aggregated)
+  expect_false(prepared$metadata$partial_initial_period_removed)
   expect_true(prepared$metadata$partial_final_period_removed)
   expect_equal(nrow(prepared$ts_data), 2)
 })
@@ -362,6 +505,9 @@ test_that("annual values are parsed and annual forecasts can be generated", {
   )
 
   ts_data <- prepare_crime_ts(data, "year", "crimes", "year")
+  expect_equal(nrow(ts_data), nrow(data))
+  expect_equal(ts_data$count, data$crimes)
+  expect_equal(ts_data$index, data$year)
   result <- generate_forecast(ts_data, "year", horizon = 2)
 
   expect_equal(nrow(result$forecast), 2)
@@ -413,7 +559,61 @@ test_that("no aggregation metadata is added when source and target frequencies m
   )
 
   expect_false(prepared$metadata$is_aggregated)
+  expect_false(prepared$metadata$partial_initial_period_removed)
   expect_false(prepared$metadata$partial_final_period_removed)
+})
+
+
+test_that("Step 2 explains when partial aggregated periods are removed at either end", {
+  ts_data <- tsibble::as_tsibble(
+    tibble::tibble(
+      index = tsibble::yearweek(seq.Date(as.Date("2010-01-04"), by = "week", length.out = 4)),
+      count = c(7, 7, 7, 7)
+    ),
+    index = index
+  )
+
+  reliability <- list(
+    summary = list(
+      n_periods = 4,
+      mean_count = 7
+    ),
+    mape = 12.5,
+    warnings = character(),
+    insufficient_history = FALSE,
+    sparse_counts = FALSE,
+    excessive_horizon = FALSE
+  )
+
+  forecast_tbl <- tibble::tibble(
+    period_start = tsibble::yearweek(seq.Date(as.Date("2010-02-01"), by = "week", length.out = 2)),
+    forecast = c(7, 7)
+  )
+
+  html <- build_reliability_html(
+    ts_data = ts_data,
+    reliability = reliability,
+    period_type = "week",
+    horizon = 2,
+    forecast_tbl = forecast_tbl,
+    prep_metadata = list(
+      source_period_type = "day",
+      target_period_type = "week",
+      is_aggregated = TRUE,
+      partial_initial_period_removed = TRUE,
+      partial_final_period_removed = TRUE,
+      removed_initial_period_label = "2009 W53",
+      removed_final_period_label = "2020 W01"
+    )
+  )
+
+  html_text <- as.character(html)
+
+  expect_match(html_text, "aggregated to weekly periods")
+  expect_match(html_text, "first week period \\(2009 W53\\) contained only partial data")
+  expect_match(html_text, "begins part-way through that week")
+  expect_match(html_text, "final week period \\(2020 W01\\) contained only partial data")
+  expect_match(html_text, "ends part-way through that week")
 })
 
 
@@ -625,4 +825,32 @@ test_that("forecast comparisons use the minimum-crimes threshold when it is larg
   expect_equal(comparison$same_absolute_band, 5)
   expect_equal(comparison$lower_same_cutoff, 4)
   expect_equal(comparison$upper_same_cutoff, 14)
+})
+
+
+test_that("forecast comparison HTML avoids 0% and 100% labels", {
+  comparison <- list(
+    available = TRUE,
+    forecast_periods = 6,
+    same_threshold = 0.05,
+    same_minimum_crimes = 5,
+    comparison_period_start = as.Date("2024-07-01"),
+    comparison_period_end = as.Date("2024-12-31"),
+    forecast_period_start = as.Date("2025-01-01"),
+    forecast_period_end = as.Date("2025-06-30"),
+    probability_higher = 0,
+    probability_same = 0.004,
+    probability_lower = 0.995,
+    lower_same_cutoff = 90,
+    upper_same_cutoff = 110,
+    comparison_total = 100,
+    point_forecast_total = 103
+  )
+
+  html <- as.character(build_forecast_comparison_html(comparison, "month"))
+
+  expect_match(html, "less than 1%")
+  expect_match(html, "more than 99%")
+  expect_no_match(html, ">0%<", perl = TRUE)
+  expect_no_match(html, ">100%<", perl = TRUE)
 })
