@@ -39,6 +39,97 @@ test_that("non-text uploads are rejected before parsing as CSV", {
 })
 
 
+test_that("oversized uploads are rejected with a clear size error", {
+  path <- tempfile(fileext = ".csv")
+  writeLines(
+    c(
+      "period,crime_count",
+      rep("2024-01-01,12", 20)
+    ),
+    path
+  )
+
+  expect_error(
+    read_crime_data(path, max_size_bytes = 50),
+    "too large"
+  )
+})
+
+
+test_that("plain-text XML uploads are rejected before parsing as CSV", {
+  path <- tempfile(fileext = ".csv")
+  writeLines(
+    c(
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<crime-data>",
+      "  <record>",
+      "    <period_start>2024-01-01</period_start>",
+      "    <crime_count>12</crime_count>",
+      "  </record>",
+      "</crime-data>"
+    ),
+    path
+  )
+
+  expect_error(
+    read_crime_data(path),
+    "does not look like CSV data"
+  )
+})
+
+
+test_that("headerless CSV uploads are recovered with generated column names", {
+  path <- tempfile(fileext = ".csv")
+  writeLines(
+    c(
+      "2024-01-01,12",
+      "2024-01-02,15",
+      "2024-01-03,11"
+    ),
+    path
+  )
+
+  data <- read_crime_data(path)
+
+  expect_equal(names(data), c("date_column_1", "numeric_column_2"))
+  expect_equal(nrow(data), 3)
+  expect_equal(as.character(data$date_column_1), c("2024-01-01", "2024-01-02", "2024-01-03"))
+  expect_equal(data$numeric_column_2, c(12, 15, 11))
+  expect_true(isTRUE(attr(data, "upload_metadata")$generated_column_names))
+})
+
+
+test_that("missing-header detection works from the once-parsed dataset", {
+  data <- tibble::tibble(
+    `2024-01-01` = as.Date(c("2024-01-02", "2024-01-03")),
+    `12` = c(15, 11)
+  )
+
+  expect_true(looks_like_missing_header_from_parsed_data(data))
+})
+
+
+test_that("column profiles cache time candidates and detected frequencies", {
+  data <- tibble::tibble(
+    period = c("2024-01-01", "2024-01-02", "2024-01-03"),
+    weekly_period = c("2024-W01", "2024-W02", "2024-W03"),
+    crime_count = c(12, 15, 11),
+    category = c("A", "B", "C")
+  )
+
+  profile <- profile_data_columns(data)
+
+  expect_equal(profile$count_columns, "crime_count")
+  expect_equal(profile$time_columns$day, "period")
+  expect_equal(profile$time_columns$week, c("period", "weekly_period"))
+  expect_equal(profile$frequency_by_column[["period"]], "day")
+  expect_equal(profile$frequency_by_column[["weekly_period"]], "week")
+  expect_equal(detect_count_columns(data, profile = profile), "crime_count")
+  expect_equal(detect_time_columns(data, "day", profile = profile), "period")
+  expect_equal(detect_frequency_from_data(data, profile = profile), NULL)
+})
+
+
 test_that("midnight-only datetime columns are treated as date columns", {
   data <- tibble::tibble(
     period = as.POSIXct(
@@ -159,7 +250,8 @@ test_that("reliability HTML uses bootstrap alerts for info, warning, and danger 
   )$html
 
   expect_match(ok_html, "alert alert-info")
-  expect_match(ok_html, "alert alert-warning")
+  expect_no_match(ok_html, "alert alert-warning")
+  expect_match(ok_html, "No major reliability warnings were triggered")
 
   reliability_bad <- modifyList(
     reliability_ok,
@@ -532,6 +624,18 @@ test_that("series assessment flags short and sparse data", {
 })
 
 
+test_that("model profiles use the same thresholds as fitted model selection", {
+  expect_equal(forecast_model_profile("year", 20)$key, "nonseasonal")
+  expect_equal(forecast_model_profile("day", 14)$key, "nonseasonal")
+  expect_equal(forecast_model_profile("day", 30)$key, "daily_weekly")
+  expect_equal(forecast_model_profile("day", 365)$key, "daily_full")
+  expect_equal(forecast_model_profile("week", 53)$key, "nonseasonal")
+  expect_equal(forecast_model_profile("week", 54)$key, "seasonal_generic")
+  expect_equal(forecast_model_profile("month", 24)$key, "nonseasonal")
+  expect_equal(forecast_model_profile("month", 25)$key, "seasonal_generic")
+})
+
+
 test_that("default horizon and suffix match the selected period type", {
   expect_equal(default_horizon("day"), 28)
   expect_equal(default_horizon("week"), 12)
@@ -541,6 +645,25 @@ test_that("default horizon and suffix match the selected period type", {
   expect_equal(format_period_suffix("week", 12), "weeks")
   expect_equal(format_period_suffix("year", 1), "year")
   expect_equal(format_period_suffix("", 5), "")
+})
+
+
+test_that("plot axis dates are formatted for the selected time frequency", {
+  dates <- as.Date(c("2024-01-01", "2024-12-01"))
+
+  expect_equal(format_plot_axis_date(dates, "day"), c("1 Jan", "1 Dec"))
+  expect_equal(format_plot_axis_date(dates, "week"), c("1 Jan", "1 Dec"))
+  expect_equal(format_plot_axis_date(dates, "month"), c("Jan 2024", "Dec 2024"))
+  expect_equal(format_plot_axis_date(dates, "year"), c("2024", "2024"))
+})
+
+
+test_that("plot date breaks target roughly five labels", {
+  short_dates <- as.Date(c("2024-01-01", "2024-01-05", "2024-01-10"))
+  long_dates <- seq.Date(as.Date("2024-01-01"), by = "day", length.out = 42)
+
+  expect_equal(plot_date_breaks(short_dates, n_labels = 5), short_dates)
+  expect_length(plot_date_breaks(long_dates, n_labels = 5), 5)
 })
 
 
