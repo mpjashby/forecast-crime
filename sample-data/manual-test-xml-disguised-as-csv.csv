@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<crime-data>
+  <record>
+    <period_start>2024-01-01</period_start>
+    <crime_count>12</crime_count>
+  </record>
+  <record>
+    <period_start>2024-01-02</period_start>
+    <crime_count>15</crime_count>
+  </record>
+</crime-data>

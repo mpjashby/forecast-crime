@@ -4458,13 +4458,31 @@
       "checksum": "b3136a962c78ed1216a17f6c0e30b9c0"
     },
     "app.R": {
-      "checksum": "49867afe728473805aefeed759ce0f7c"
+      "checksum": "9d343f793e8c4fc5bb6c2b8c76e46c84"
     },
     "LICENSE": {
       "checksum": "4c0a0507f116c3431294d821a200c8de"
     },
+    "R/00-formatting-utils.R": {
+      "checksum": "62c53edaa04eb0742fadc562196bdb33"
+    },
+    "R/01-time-series-utils.R": {
+      "checksum": "d9f8bd681b032a79f9e21637838caa25"
+    },
+    "R/02-holiday-utils.R": {
+      "checksum": "455b76665326eaa512467e0e90f94ab0"
+    },
+    "R/03-upload-and-parse-utils.R": {
+      "checksum": "3f7ea35f0e257154436a10d564d29a4e"
+    },
+    "R/04-forecast-and-comparison-utils.R": {
+      "checksum": "f06626dffbfc5fb3fc771400fa8be91f"
+    },
+    "R/05-ui-text-utils.R": {
+      "checksum": "108cfffaf7718134ee7dcde6ad307b7b"
+    },
     "R/forecast_utils.R": {
-      "checksum": "13ada2111a222f0e576f4b9647073bbc"
+      "checksum": "752924d7e5637540cb0178e08028ef57"
     },
     "README.md": {
       "checksum": "f8550f85ca5e4a35bebd47ec937914dd"
@@ -4523,6 +4541,15 @@
     "sample-data/louisville-weekly-criminal-damage.csv": {
       "checksum": "944f1ae2202df2606cfe99785c6034c5"
     },
+    "sample-data/manual-test-no-header.csv": {
+      "checksum": "4cdde0900244d2e579fb6fb1c5ef2d1f"
+    },
+    "sample-data/manual-test-too-large.csv": {
+      "checksum": "f3c0c8616b8ed6f57f7c54a47c7b3d72"
+    },
+    "sample-data/manual-test-xml-disguised-as-csv.csv": {
+      "checksum": "e80d68f01fbef3f05c4916d867280e65"
+    },
     "sample-data/monthly-assault-counts.csv": {
       "checksum": "935fc16165461c2a3fa8b92cb31ff2af"
     },
@@ -4536,10 +4563,10 @@
       "checksum": "cd18eeec9df5f3ad6a300ab198a35cf5"
     },
     "tests/testthat/test-app-reactivity.R": {
-      "checksum": "2aaec2cf713255138ce04aa36b7c489f"
+      "checksum": "4593f71a9af1acb2707bd5e11179eef7"
     },
     "tests/testthat/test-forecast-utils.R": {
-      "checksum": "42ecaac544ef618387914f55919c5e22"
+      "checksum": "4bbebe712c0bf9bc482b34f3f1eb11b5"
     }
   },
   "users": null
