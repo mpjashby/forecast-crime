@@ -347,10 +347,11 @@ server <- function(input, output, session) {
     ignoreInit = TRUE
   )
 
-  # Freeze the current Step 1 settings and all downstream outputs together
-  # whenever the user explicitly requests new forecasts. This keeps Steps 2 to
-  # 6 internally consistent even if the user edits Step 1 afterwards.
-  forecast_run <- eventReactive(input$run_forecast, {
+  # Recompute the full Step 2 to 6 snapshot only when the user explicitly
+  # requests new forecasts.
+  forecast_run <- reactiveVal(NULL)
+
+  observeEvent(input$run_forecast, {
     req(uploaded_data(), input$time_col, input$count_col, input$period_type)
     validate(
       need(
@@ -419,15 +420,121 @@ server <- function(input, output, session) {
       NULL
     }
 
+    config <- period_config(settings$period_type)
+    history_tbl <- prepared$ts_data |>
+      tibble::as_tibble() |>
+      mutate(period_start = index_to_date(index))
+    recent_n <- min(config$recent_points, nrow(history_tbl))
+    history_tbl <- dplyr::slice_tail(history_tbl, n = recent_n)
+
+    forecast_tbl <- forecast$forecast
+    bridge_tbl <- history_tbl |>
+      slice_tail(n = 1) |>
+      transmute(period_start, value = count, series = "Observed")
+    forecast_line_tbl <- dplyr::bind_rows(
+      bridge_tbl |>
+        transmute(period_start, value, series = "Forecast"),
+      forecast_tbl |>
+        transmute(period_start, value = forecast, series = "Forecast")
+    )
+    forecast_interval_tbl <- dplyr::bind_rows(
+      history_tbl |>
+        slice_tail(n = 1) |>
+        transmute(
+          period_start,
+          lower_50 = count,
+          upper_50 = count,
+          lower_80 = count,
+          upper_80 = count,
+          lower_95 = count,
+          upper_95 = count
+        ),
+      forecast_tbl |>
+        transmute(
+          period_start,
+          lower_50,
+          upper_50,
+          lower_80,
+          upper_80,
+          lower_95,
+          upper_95
+        )
+    )
+
+    forecast_preview_tbl <- forecast_tbl |>
+      slice_head(n = 10) |>
+      select(
+        period_start,
+        forecast,
+        lower_50,
+        upper_50,
+        lower_80,
+        upper_80,
+        lower_95,
+        upper_95
+      ) |>
+      mutate(
+        period_start = format_display_date(period_start),
+        forecast = round(forecast, 1),
+        lower_50 = round(lower_50, 1),
+        upper_50 = round(upper_50, 1),
+        lower_80 = round(lower_80, 1),
+        upper_80 = round(upper_80, 1),
+        lower_95 = round(lower_95, 1),
+        upper_95 = round(upper_95, 1)
+      )
+
+    step2_html <- build_reliability_html(
+      ts_data = prepared$ts_data,
+      reliability = forecast$reliability,
+      period_type = settings$period_type,
+      horizon = settings$horizon,
+      forecast_tbl = forecast_tbl,
+      prep_metadata = prepared$metadata
+    )
+
+    step5_html <- if (length(forecast$reliability$warnings) == 0) {
+      build_forecast_comparison_html(
+        comparison = comparison,
+        period_type = settings$period_type
+      )
+    } else {
+      build_step5_unavailable_html(forecast$reliability)
+    }
+
+    step6_html <- HTML(
+      build_modelling_explanation(
+        ts_data = prepared$ts_data,
+        period_type = settings$period_type,
+        holiday_country = if (isTRUE(settings$include_public_holidays)) {
+          settings$holiday_country
+        } else {
+          NULL
+        }
+      )
+    )
+
     applied_settings(settings)
 
-    list(
+    forecast_run(list(
+      run_id = isolate(input$run_forecast),
       settings = settings,
       prepared = prepared,
       forecast = forecast,
-      comparison = comparison
-    )
-  })
+      comparison = comparison,
+      plot = list(
+        config = config,
+        history_tbl = history_tbl,
+        forecast_tbl = forecast_tbl,
+        forecast_line_tbl = forecast_line_tbl,
+        forecast_interval_tbl = forecast_interval_tbl
+      ),
+      forecast_preview = forecast_preview_tbl,
+      step2_html = step2_html,
+      step5_html = step5_html,
+      step6_html = step6_html
+    ))
+  }, ignoreInit = TRUE)
 
   # Expose the frozen run settings, prepared time series, and metadata
   # separately so the renderers can all use the same forecast snapshot.
@@ -468,14 +575,10 @@ server <- function(input, output, session) {
   # Step 2 shows data checks, aggregation notes, and forecast reliability
   # information based on the latest generated results.
   output$reliability_ui <- render_ui_with_alert_errors({
-    req(forecast_result(), run_settings())
-    build_reliability_html(
-      ts_data = prepared_series(),
-      reliability = forecast_result()$reliability,
-      period_type = run_settings()$period_type,
-      horizon = run_settings()$horizon,
-      forecast_tbl = forecast_result()$forecast,
-      prep_metadata = preparation_metadata()
+    req(forecast_run())
+    div(
+      id = sprintf("step2-run-%s", forecast_run()$run_id),
+      forecast_run()$step2_html
     )
   })
 
@@ -501,85 +604,45 @@ server <- function(input, output, session) {
   # Draw the forecast chart with the last few observed points, the forecast
   # path, and nested uncertainty bands.
   output$forecast_plot <- renderPlot({
-    req(forecast_result(), prepared_series(), run_settings())
-    config <- period_config(run_settings()$period_type)
-    history_tbl <- prepared_series() |>
-      tibble::as_tibble() |>
-      mutate(period_start = index_to_date(index))
-
-    recent_n <- min(config$recent_points, nrow(history_tbl))
-    history_tbl <- dplyr::slice_tail(history_tbl, n = recent_n)
-
-    forecast_tbl <- forecast_result()$forecast
-    bridge_tbl <- history_tbl |>
-      slice_tail(n = 1) |>
-      transmute(period_start, value = count, series = "Observed")
-    forecast_line_tbl <- dplyr::bind_rows(
-      bridge_tbl |>
-        transmute(period_start, value, series = "Forecast"),
-      forecast_tbl |>
-        transmute(period_start, value = forecast, series = "Forecast")
-    )
-    forecast_interval_tbl <- dplyr::bind_rows(
-      history_tbl |>
-        slice_tail(n = 1) |>
-        transmute(
-          period_start,
-          lower_50 = count,
-          upper_50 = count,
-          lower_80 = count,
-          upper_80 = count,
-          lower_95 = count,
-          upper_95 = count
-        ),
-      forecast_tbl |>
-        transmute(
-          period_start,
-          lower_50,
-          upper_50,
-          lower_80,
-          upper_80,
-          lower_95,
-          upper_95
-        )
-    )
+    req(forecast_run())
+    plot_data <- forecast_run()$plot
 
     ggplot() +
       geom_ribbon(
-        data = forecast_interval_tbl,
+        data = plot_data$forecast_interval_tbl,
         aes(x = period_start, ymin = lower_95, ymax = upper_95),
         fill = "#c6dbef",
         alpha = 0.6
       ) +
       geom_ribbon(
-        data = forecast_interval_tbl,
+        data = plot_data$forecast_interval_tbl,
         aes(x = period_start, ymin = lower_80, ymax = upper_80),
         fill = "#6baed6",
         alpha = 0.55
       ) +
       geom_ribbon(
-        data = forecast_interval_tbl,
+        data = plot_data$forecast_interval_tbl,
         aes(x = period_start, ymin = lower_50, ymax = upper_50),
         fill = "#2171b5",
         alpha = 0.45
       ) +
       geom_line(
-        data = forecast_line_tbl,
+        data = plot_data$forecast_line_tbl,
         aes(x = period_start, y = value, colour = series),
         linewidth = 1
       ) +
       geom_point(
-        data = forecast_tbl,
+        data = plot_data$forecast_tbl,
         aes(x = period_start, y = forecast, colour = "Forecast"),
         size = 2
       ) +
       geom_line(
-        data = history_tbl,
+        data = plot_data$history_tbl,
         aes(x = period_start, y = count, colour = "Observed"),
         linewidth = 0.9
       ) +
       geom_point(
-        data = history_tbl,
+        data = plot_data$history_tbl,
         aes(x = period_start, y = count, colour = "Observed"),
         size = 2
       ) +
@@ -634,29 +697,8 @@ server <- function(input, output, session) {
   # Show the first few forecast rows in a simple table for quick inspection.
   output$forecast_preview <- renderTable(
     {
-      req(forecast_result())
-      forecast_result()$forecast |>
-        slice_head(n = 10) |>
-        select(
-          period_start,
-          forecast,
-          lower_50,
-          upper_50,
-          lower_80,
-          upper_80,
-          lower_95,
-          upper_95
-        ) |>
-        mutate(
-          period_start = format_display_date(period_start),
-          forecast = round(forecast, 1),
-          lower_50 = round(lower_50, 1),
-          upper_50 = round(upper_50, 1),
-          lower_80 = round(lower_80, 1),
-          upper_80 = round(upper_80, 1),
-          lower_95 = round(lower_95, 1),
-          upper_95 = round(upper_95, 1)
-        )
+      req(forecast_run())
+      forecast_run()$forecast_preview
     },
     striped = TRUE,
     bordered = TRUE,
@@ -679,17 +721,11 @@ server <- function(input, output, session) {
   # Render the Step 5 content separately so the spinner can wrap a real Shiny
   # output without leaving excess space after the result is shown.
   output$step5_content <- render_ui_with_alert_errors({
-    req(forecast_result(), run_settings())
-
-    if (!step5_inference_available()) {
-      build_step5_unavailable_html(forecast_result()$reliability)
-    } else {
-      req(forecast_comparison())
-      build_forecast_comparison_html(
-        comparison = forecast_comparison(),
-        period_type = run_settings()$period_type
-      )
-    }
+    req(forecast_run())
+    div(
+      id = sprintf("step5-run-%s", forecast_run()$run_id),
+      forecast_run()$step5_html
+    )
   })
 
   # Gray out Step 5 whenever Step 1 changes after the last run.
@@ -703,21 +739,12 @@ server <- function(input, output, session) {
   # Step 6 explains the modelling approach used for the current forecast run
   # in plain language for non-technical users.
   output$step6_panel <- render_ui_with_alert_errors({
-    req(prepared_series(), run_settings())
+    req(forecast_run())
 
     div(
+      id = sprintf("step6-run-%s", forecast_run()$run_id),
       class = if (results_stale()) "results-stale" else NULL,
-      HTML(
-        build_modelling_explanation(
-          ts_data = prepared_series(),
-          period_type = run_settings()$period_type,
-          holiday_country = if (isTRUE(run_settings()$include_public_holidays)) {
-            run_settings()$holiday_country
-          } else {
-            NULL
-          }
-        )
-      )
+      forecast_run()$step6_html
     )
   })
 
